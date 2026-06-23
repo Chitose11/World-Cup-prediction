@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>World Cup V3.2 赔率概率工作台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="eyebrow">World Cup V3.2 Workbench</div>
+          <h1>赔率概率工作台</h1>
+        </div>
+        <div class="sync-group">
+          <select id="poolSelect" title="同步玩法">
+            <option value="hafu,had,hhad,ttg,crs">同步全部玩法</option>
+            <option value="hafu">半全场</option>
+            <option value="had">胜平负</option>
+            <option value="hhad">让球胜平负</option>
+            <option value="ttg">总进球</option>
+            <option value="crs">比分</option>
+          </select>
+          <button id="syncBtn" type="button" data-icon="↻">同步 sporttery</button>
+          <button id="exportModelBtn" class="secondary-btn" type="button" data-icon="⇩">导出整体模型</button>
+          <button id="importModelBtn" class="secondary-btn" type="button" data-icon="⇧">导入整体模型</button>
+          <input id="importModelFile" type="file" accept="application/json,.json" hidden />
+        </div>
+      </header>
+
+      <section class="model-io-panel" id="modelIoPanel" hidden>
+        <div class="model-io-panel-head">
+          <strong>整体模型快照</strong>
+          <button id="modelIoCloseBtn" type="button" data-icon="▴">收起</button>
+        </div>
+        <textarea id="modelSnapshotText" placeholder="导出的整体模型快照会显示在这里；也可以粘贴 JSON 后导入。快照包含全部比赛、联网情报、模型输出和模拟盘历史。"></textarea>
+      </section>
+
+      <section class="status-line" id="statusLine">
+        未同步。数据仅用于模型研究和风险识别，不构成投注建议。
+      </section>
+
+      <nav class="view-tabs" id="viewTabs">
+        <button class="active" type="button" data-view="workbench" data-icon="▦">单场工作台</button>
+        <button type="button" data-view="dayplan" data-icon="☷">全天计划方案</button>
+        <button type="button" data-view="simulation" data-icon="◎">世界杯模拟盘</button>
+      </nav>
+
+      <section class="workspace view-panel active" id="workbenchView">
+        <aside class="match-pane">
+          <div class="pane-head">
+            <h2>比赛</h2>
+            <input id="matchSearch" type="search" placeholder="搜索球队 / 联赛" />
+          </div>
+          <div id="matchList" class="match-list"></div>
+        </aside>
+
+        <section class="analysis-pane">
+          <div class="match-hero" id="matchHero">
+            <div class="empty-state">同步后选择一场比赛开始计算。</div>
+          </div>
+
+          <div class="controls-grid">
+            <label>
+              主队期望进球
+              <input id="lambdaHome" type="range" min="0.2" max="3.4" step="0.05" value="1.55" />
+              <span id="lambdaHomeValue">1.55</span>
+            </label>
+            <label>
+              客队期望进球
+              <input id="lambdaAway" type="range" min="0.2" max="3.4" step="0.05" value="0.85" />
+              <span id="lambdaAwayValue">0.85</span>
+            </label>
+            <label>
+              比赛画像
+              <select id="profileSelect">
+                <option value="default">默认三状态</option>
+                <option value="elite-finisher">顶级终结型强队</option>
+                <option value="defensive-favorite">热门 vs 防守弱队</option>
+                <option value="balanced">互有机会 / 中档热门</option>
+              </select>
+            </label>
+            <label>
+              环境节奏
+              <select id="tempoSelect">
+                <option value="normal">正常</option>
+                <option value="slow">高温/海拔/旅途降速</option>
+                <option value="open">开放对攻</option>
+              </select>
+            </label>
+          </div>
+          <div class="auto-judge-box" id="autoJudgeBox">
+            联网搜索后自动判断期望进球、比赛画像和环境节奏。
+          </div>
+
+          <div class="play-toolbar">
+            <nav class="play-tabs" id="playTabs">
+              <button class="active" data-play="hafu" data-icon="◐">半全场</button>
+              <button data-play="had" data-icon="1">胜平负</button>
+              <button data-play="hhad" data-icon="±">让球</button>
+              <button data-play="crs" data-icon="#">比分</button>
+              <button data-play="ttg" data-icon="Σ">总进球</button>
+            </nav>
+            <section class="recommend-section recommend-section-inline">
+              <div class="section-head">
+                <h2>玩法方案</h2>
+                <div class="budget-inline">
+                  <span>总金额</span>
+                  <input id="budgetInput" type="number" min="2" step="2" value="100" aria-label="总金额" />
+                  <button id="recommendBtn" type="button" data-icon="+">生成</button>
+                </div>
+              </div>
+            </section>
+          </div>
+          <div id="recommendBox" class="recommend-box recommend-box-inline">
+            输入总金额后生成保守/激进两个方案。每注 2 元，单项最高 50 倍。
+          </div>
+
+          <div class="summary-strip" id="summaryStrip"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>玩法</th>
+                  <th>赔率</th>
+                  <th>隐含概率</th>
+                  <th>V3.3 概率</th>
+                  <th>差值</th>
+                  <th>风险</th>
+                </tr>
+              </thead>
+              <tbody id="oddsTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="decision-pane">
+          <section class="decision-section">
+            <h2>V3.3 结论</h2>
+            <div id="decisionBox" class="decision-box">
+              等待选择比赛。
+            </div>
+          </section>
+
+          <section class="research-section">
+            <div class="section-head">
+              <h2>联网情报</h2>
+              <div class="section-actions">
+                <button id="researchToggleBtn" type="button" data-icon="▾">展开</button>
+                <button id="researchBtn" type="button" data-icon="⌕">搜索首发/动机</button>
+              </div>
+            </div>
+            <div id="researchBox" class="research-box">
+              选择比赛后可联网搜索首发、伤停、赛程动机和盘口异动。
+            </div>
+          </section>
+
+          <div class="paste-box">
+            <label for="pasteJson">抓取失败兜底 JSON</label>
+            <textarea id="pasteJson" placeholder="可粘贴 sporttery 接口 JSON，或本工作台导出的 matches JSON"></textarea>
+            <button id="parsePasteBtn" type="button" data-icon="⤷">解析粘贴数据</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="day-plan-view view-panel" id="dayPlanView">
+        <div class="day-plan-head">
+          <div>
+            <div class="eyebrow">Daily Portfolio</div>
+            <h2>全天计划方案</h2>
+          </div>
+          <div class="day-plan-actions">
+            <label>
+              比赛日期
+              <select id="dayPlanDateSelect"></select>
+            </label>
+            <label>
+              总预算
+              <input id="dayPlanBudgetInput" type="number" min="2" step="2" value="300" />
+            </label>
+            <button id="dayPlanGenerateBtn" type="button" data-icon="⌕">补全情报并生成</button>
+            <button id="dayPlanExportBtn" type="button" data-icon="↓">导出AI分析数据</button>
+            <button id="dayPlanClearBtn" type="button" data-icon="×">清空全天计划</button>
+          </div>
+        </div>
+        <div id="dayPlanProgress" class="day-plan-progress">
+          同步比赛后选择日期，生成时会自动补齐当天全部比赛的联网情报，再用完整模型计算方案。
+        </div>
+        <div id="dayPlanSummary" class="day-plan-summary"></div>
+        <div id="dayPlanResults" class="day-plan-results">
+          <div class="empty-state">暂无全天计划方案。</div>
+        </div>
+      </section>
+
+      <section class="simulation-view view-panel" id="simulationView">
+        <div class="sim-head">
+          <div>
+            <div class="eyebrow">World Cup Simulation</div>
+            <h2>世界杯模拟盘</h2>
+          </div>
+          <div class="sim-actions">
+            <label>
+              每场定投
+              <input id="simStakeInput" type="number" min="2" step="2" value="1000" />
+            </label>
+            <button id="simGenerateBtn" type="button" data-icon="+">生成未来预测</button>
+            <button id="simFetchResultsBtn" type="button" data-icon="↻">同步赛果</button>
+            <button id="simSettleBtn" type="button" data-icon="✓">结算已填赛果</button>
+            <button id="simClearBtn" type="button" data-icon="×">清空模拟</button>
+          </div>
+        </div>
+        <div id="simulationSummary" class="simulation-summary"></div>
+        <div class="simulation-grid">
+          <section>
+            <div class="section-head"><h2>未来预测</h2></div>
+            <div id="simulationFuture" class="simulation-list"></div>
+          </section>
+          <section>
+            <div class="section-head"><h2>历史预测</h2></div>
+            <div id="simulationHistory" class="simulation-list"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

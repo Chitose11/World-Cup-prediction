@@ -1,0 +1,44 @@
+{
+  "name": "sporttery-v32-workbench",
+  "version": "0.2.6",
+  "private": true,
+  "description": "World Cup V3.2 visual probability workbench with Sporttery odds sync.",
+  "type": "module",
+  "main": "src/electron-main.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "desktop": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "local.worldcup.v32.workbench",
+    "productName": "World Cup V3.2 Workbench",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "package.json",
+      "README.md",
+      "src/**/*",
+      "public/**/*",
+      "model/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^37.2.5",
+    "electron-builder": "^26.0.12"
+  }
+}
