@@ -94,6 +94,18 @@
             联网搜索后自动判断期望进球、比赛画像和环境节奏。
           </div>
 
+          <div class="inplay-panel" id="inPlayPanel">
+            <div class="inplay-head">
+              <span class="inplay-badge">⏱ 实时赛况</span>
+              <span id="inPlayCountdown" class="inplay-countdown"></span>
+              <button id="inPlayToggleBtn" type="button" data-icon="▶" disabled>等待开赛</button>
+              <button id="inPlayRefreshBtn" type="button" data-icon="↻" style="display:none">刷新</button>
+            </div>
+            <div class="inplay-result" id="inPlayResult">
+              <div style="color:#999;text-align:center;padding:12px">选择比赛后可查看实时赛况。</div>
+            </div>
+          </div>
+
           <div class="play-toolbar">
             <nav class="play-tabs" id="playTabs">
               <button class="active" data-play="hafu" data-icon="◐">半全场</button>
@@ -184,6 +196,18 @@
             <button id="dayPlanClearBtn" type="button" data-icon="×">清空全天计划</button>
           </div>
         </div>
+        <div class="inplay-panel" id="dayInPlayPanel">
+          <div class="inplay-head">
+            <span class="inplay-badge">⏱ 实时赛况</span>
+            <span id="dayInPlayCountdown" class="inplay-countdown">选择比赛后查看</span>
+            <button id="dayInPlayToggleBtn" type="button" data-icon="▶" disabled>等待开赛</button>
+            <button id="dayInPlayRefreshBtn" type="button" data-icon="↻" style="display:none">刷新</button>
+          </div>
+          <div class="inplay-result" id="dayInPlayResult">
+            <div style="color:#999;text-align:center;padding:12px">点击全天计划中的比赛编号可查看实时赛况。</div>
+          </div>
+        </div>
+
         <div id="dayPlanProgress" class="day-plan-progress">
           同步比赛后选择日期，生成时会自动补齐当天全部比赛的联网情报，再用完整模型计算方案。
         </div>
@@ -206,6 +230,7 @@
             </label>
             <button id="simGenerateBtn" type="button" data-icon="+">生成未来预测</button>
             <button id="simFetchResultsBtn" type="button" data-icon="↻">同步赛果</button>
+            <button id="simCLVBtn" type="button" data-icon="⏱">捕获闭盘线</button>
             <button id="simSettleBtn" type="button" data-icon="✓">结算已填赛果</button>
             <button id="simClearBtn" type="button" data-icon="×">清空模拟</button>
           </div>

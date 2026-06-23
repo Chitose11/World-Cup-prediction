@@ -59,6 +59,13 @@ const els = {
   profileSelect: $("#profileSelect"),
   tempoSelect: $("#tempoSelect"),
   autoJudgeBox: $("#autoJudgeBox"),
+  inPlayPanel: $("#inPlayPanel"),
+  inPlayToggleBtn: $("#inPlayToggleBtn"),
+  inPlayRefreshBtn: $("#inPlayRefreshBtn"),
+  inPlayMinutes: $("#inPlayMinutes"),
+  inPlayHomeGoals: $("#inPlayHomeGoals"),
+  inPlayAwayGoals: $("#inPlayAwayGoals"),
+  inPlayResult: $("#inPlayResult"),
   playTabs: $("#playTabs"),
   summaryStrip: $("#summaryStrip"),
   oddsTable: $("#oddsTable"),
@@ -88,6 +95,7 @@ const els = {
   simStakeInput: $("#simStakeInput"),
   simGenerateBtn: $("#simGenerateBtn"),
   simFetchResultsBtn: $("#simFetchResultsBtn"),
+  simCLVBtn: $("#simCLVBtn"),
   simSettleBtn: $("#simSettleBtn"),
   simClearBtn: $("#simClearBtn"),
   simulationSummary: $("#simulationSummary"),
@@ -1003,6 +1011,8 @@ function scorePlanCandidate(row, context, mode, options = {}) {
   if (context.dangerZone && row.play === "had") return { ...row, rejected: true, rejectReason: "Danger Zone: no HAD single pick" };
   if (mode === "conservative" && row.play === "crs") return { ...row, rejected: true, rejectReason: "保守方案不选比分高波动项" };
   if (prob < minProb && ev < 0.06) return { ...row, rejected: true, rejectReason: `模型概率低于${fmtPct(minProb)}` };
+  // Kelly-based low-probability guard — replaces hardcoded ttg:s0/s1/s6/s7 filter
+  if (mode === "conservative" && prob < 0.25) return { ...row, rejected: true, rejectReason: "保守模式剔除低概率(高方差)尾部事件" };
   if (row.play === "had" && row.key !== context.favoriteSide && row.key !== "d" && mode === "conservative") {
     return { ...row, rejected: true, rejectReason: "保守方案不选胜平负冷门胜" };
   }
@@ -1081,6 +1091,11 @@ function scorePlanCandidate(row, context, mode, options = {}) {
   if (context.circuitBreaker && row.play === "hhad" && context.deepHandicap) {
     return { ...row, rejected: true, rejectReason: "circuit breaker: deep handicap rejected" };
   }
+  // Deviation circuit breaker: model prob vs bookmaker implied prob divergence
+  const impliedProb = 1 / odds;
+  if (prob / impliedProb > 2.2) {
+    return { ...row, rejected: true, rejectReason: `偏离度熔断: 模型(${(prob*100).toFixed(1)}%)与庄家(${(impliedProb*100).toFixed(1)}%)偏差超2.2倍` };
+  }
 
   // r6: strength bonus for extreme mismatch
   const strengthBonus = (context.strengthModifier < 0.7) ? 0.15 : 0;
@@ -1090,7 +1105,14 @@ function scorePlanCandidate(row, context, mode, options = {}) {
   const finalKelly = adjustedKelly * playMultiplier;
   const combinedMultiplier = clamp(playMultiplier * v2RiskMultiplier, 0.25, 1.50);
 
-  const v2Score = (finalEV * 1.8) + (finalKelly * 2.4) + (prob * 0.22) + (playReliabilityScore * 0.08) + strengthBonus;
+  // r6.1: Kelly Fraction Score — odds-1 denominator naturally crushes high-odds tail EV
+  // Kelly Fraction = EV / (Odds - 1).  Higher odds → heavier penalty.
+  // This replaces the old (EV×1.8 + Kelly×2.4 + prob×0.22) composite with a single
+  // unified metric that auto-penalizes long-shot bets without hardcoded filters.
+  const kellyFractionScore = (Number.isFinite(ev) && ev > 0 && odds > 1)
+    ? (finalEV / (odds - 1)) * combinedMultiplier
+    : 0;
+  const v2Score = kellyFractionScore + strengthBonus;
 
   // Tags
   if (playMultiplier > 1.05) pushUnique(tags, "玩法优势");
@@ -2443,6 +2465,62 @@ function resultDateRange(predictions) {
   };
 }
 
+async function captureClosingLine() {
+  const predictions = state.simulation.predictions || [];
+  if (!predictions.length) { setStatus("没有待赛预测可捕获闭盘线。", true); return; }
+  els.simCLVBtn.disabled = true;
+  setStatus("正在捕获闭盘赔率...");
+  try {
+    const response = await fetch(`/api/sporttery?pool=had`);
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "获取赔率失败");
+    const oddsMap = new Map();
+    for (const m of payload.matches || []) {
+      const h = m.pools?.had?.find(i => i.key === "h")?.odds;
+      const d = m.pools?.had?.find(i => i.key === "d")?.odds;
+      const a = m.pools?.had?.find(i => i.key === "a")?.odds;
+      if (h && d && a) oddsMap.set(String(m.id), { h, d, a });
+    }
+    // Record to CLV ledger and capture closing odds
+    let captured = 0;
+    for (const pred of predictions) {
+      const odds = oddsMap.get(String(pred.matchId));
+      if (!odds) continue;
+      const closingOdds = pred.play === "had"
+        ? odds[pred.key] : odds.h;
+      if (!closingOdds) continue;
+
+      pred.closingOdds = closingOdds;
+      pred.clv = ((pred.odds / closingOdds) - 1) * 100;
+      captured++;
+
+      // Write to server-side CLV ledger
+      try {
+        await fetch("/api/clv/record", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            match_id: pred.matchId,
+            kickoff_time: `${pred.matchDate}T${String(pred.matchTime || "00:00:00").slice(0, 8)}Z`,
+            target_market: pred.play === "hhad" ? "让球胜平负" : "胜平负",
+            selection: pred.label,
+            selection_key: pred.key,
+            bet_time: pred.createdAt || new Date().toISOString(),
+            taken_odds: pred.odds,
+          }),
+        });
+      } catch (e) { /* ledger write failure is non-fatal */ }
+    }
+    await persistState({ immediate: true });
+    renderSimulation();
+    setStatus(`已捕获 ${captured}/${predictions.length} 场闭盘赔率。CLV = (预测赔率/闭盘赔率) − 1`);
+  } catch (error) {
+    setStatus(`捕获失败：${error.message}`, true);
+  } finally {
+    els.simCLVBtn.disabled = false;
+  }
+}
+
 async function syncSimulationResults() {
   const pending = state.simulation.predictions || [];
   if (!pending.length) {
@@ -2514,11 +2592,18 @@ function renderSimulation() {
   const settledReturn = history.reduce((sum, item) => sum + (item.returnAmount || 0), 0);
   const profit = settledReturn - settledStake;
   const winCount = history.filter((item) => item.status === "won").length;
+  const historyWithCLV = history.filter(i => Number.isFinite(i.closingOdds) && i.closingOdds > 0);
+  const clvPositive = historyWithCLV.filter(i => ((i.odds || 1) / (i.closingOdds || 1) - 1) > 0).length;
+  const weightedCLV = historyWithCLV.length
+    ? historyWithCLV.reduce((s, i) => s + (i.stake || 0) * ((i.odds || 1) / (i.closingOdds || 1) - 1) * 100, 0)
+      / historyWithCLV.reduce((s, i) => s + (i.stake || 0), 0)
+    : 0;
   els.simulationSummary.innerHTML = `
     <div class="sim-kpi"><span>未来预测</span><strong>${predictions.length}</strong></div>
     <div class="sim-kpi"><span>已结算投入</span><strong>${fmtMoney(settledStake)}</strong></div>
     <div class="sim-kpi"><span>累计收益</span><strong class="${profit >= 0 ? "edge-pos" : "edge-neg"}">${fmtMoney(profit)}</strong></div>
     <div class="sim-kpi"><span>命中率</span><strong>${history.length ? fmtPct(winCount / history.length) : "-"}</strong></div>
+    ${historyWithCLV.length ? `<div class="sim-kpi"><span>加权CLV</span><strong class="${weightedCLV >= 0 ? "edge-pos" : "edge-neg"}">${weightedCLV >= 0 ? "+" : ""}${weightedCLV.toFixed(1)}%</strong><small>跑赢${historyWithCLV.length}场中${clvPositive}场</small></div>` : ""}
   `;
   els.simulationFuture.innerHTML = predictions.length ? predictions.map((item) => `
     <div class="simulation-row">
@@ -2553,6 +2638,7 @@ function renderSimulation() {
         <span>投入 ${fmtMoney(item.stake)}</span>
         <span>返还 ${fmtMoney(item.returnAmount || 0)}</span>
         <span>盈亏 ${fmtMoney(item.profit || 0)}</span>
+        ${Number.isFinite(item.closingOdds) && item.closingOdds > 0 ? `<span class="${((item.odds||1)/(item.closingOdds||1)-1) >= 0 ? "edge-pos" : "edge-neg"}">闭盘 ${item.closingOdds.toFixed(2)} · CLV ${((item.odds||1)/(item.closingOdds||1)-1) >= 0 ? "+" : ""}${((item.odds / item.closingOdds - 1) * 100).toFixed(1)}%</span>` : ""}
       </div>
     </div>
   `).join("") : `<div class="empty-state">暂无历史预测。可同步赛果自动结算，或填入比分后手动结算。</div>`;
@@ -2738,6 +2824,255 @@ function getBestModelForMatch(match) {
 }
 els.budgetInput.addEventListener("input", () => renderRecommendations(selectedMatch(), getBestModelForMatch(selectedMatch())));
 els.recommendBtn.addEventListener("click", () => renderRecommendations(selectedMatch(), getBestModelForMatch(selectedMatch())));
+
+// 实时赛况面板 — always visible, countdown before KO, live polling after KO
+let inPlayActive = false;
+let inPlayTimer = null;
+let countdownTimer = null;
+
+function updateInPlayPanel() {
+  const match = selectedMatch();
+  if (!match) {
+    els.inPlayToggleBtn.disabled = true;
+    els.inPlayToggleBtn.textContent = "等待开赛";
+    els.inPlayResult.innerHTML = `<div style="color:#999;text-align:center;padding:12px">选择比赛后可查看实时赛况。</div>`;
+    return;
+  }
+  if (!match.matchDate) {
+    els.inPlayToggleBtn.disabled = true;
+    els.inPlayToggleBtn.textContent = "无开赛时间";
+    return;
+  }
+  const ko = new Date(`${match.matchDate}T${String(match.matchTime || "00:00:00").slice(0, 8)}`);
+  const diffSec = (ko - new Date()) / 1000;
+  if (diffSec > 0) {
+    // Not started yet — show countdown
+    els.inPlayToggleBtn.disabled = true;
+    const h = Math.floor(diffSec / 3600);
+    const m = Math.floor((diffSec % 3600) / 60);
+    const s = Math.floor(diffSec % 60);
+    els.inPlayCountdown.textContent = diffSec > 7200 ? `${match.matchDate} ${String(match.matchTime||"").slice(0,5)}` : `距开赛 ${h}h${m}m${s}s`;
+    els.inPlayToggleBtn.textContent = "等待开赛";
+    els.inPlayResult.innerHTML = `<div style="color:#999;text-align:center;padding:12px">${match.homeShort} vs ${match.awayShort} · 尚未开赛 · ${els.inPlayCountdown.textContent}</div>`;
+    // Refresh countdown every second
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => { updateInPlayPanel(); if (!diffSec || diffSec <= -150*60) clearInterval(countdownTimer); }, 1000);
+    return;
+  }
+  // Match is live
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  els.inPlayToggleBtn.disabled = false;
+  if (!inPlayActive) {
+    els.inPlayToggleBtn.textContent = "启动实时";
+    els.inPlayCountdown.textContent = "已开赛";
+  }
+}
+
+function showInPlayCountdown() {
+  if (!els.inPlayPanel) return; // not on single-match page
+  updateInPlayPanel();
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = setInterval(updateInPlayPanel, 1000);
+}
+function hideInPlayCountdown() { if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } }
+
+async function fetchLiveData() {
+  if (!inPlayActive) return;
+  const match = selectedMatch();
+  if (!match) return;
+  try {
+    let minutes = 0, h = 0, a = 0;
+    try {
+      const res = await fetch(`/api/anysport/live`);
+      if (res.ok) {
+        const liveData = await res.json();
+        if (liveData?.ok && liveData.matches?.length) {
+          const found = liveData.matches.find(m =>
+            (m.home_team?.name || "").includes(match.homeShort || "") ||
+            (m.away_team?.name || "").includes(match.awayShort || ""));
+          if (found) {
+            minutes = found.minutes_played || found.elapsed || 0;
+            h = found.home_goals || found.score?.home || 0;
+            a = found.away_goals || found.score?.away || 0;
+          }
+        }
+      }
+    } catch (e) { /* fallback */ }
+
+    if (!minutes && !h && !a) {
+      const ko = new Date(`${match.matchDate}T${String(match.matchTime || "00:00:00").slice(0, 8)}`);
+      minutes = Math.min(Math.max(0, Math.floor((new Date() - ko) / 60000)), 120);
+    }
+    els.inPlayCountdown.textContent = `${minutes}' ${h}-${a}`;
+    await refreshInPlay(minutes, h, a);
+  } catch (e) { els.inPlayCountdown.textContent = "数据获取失败"; }
+}
+
+async function refreshInPlay(minutes = 0, h = 0, a = 0) {
+  const match = selectedMatch();
+  if (!match) return;
+  try {
+    const response = await fetch("/api/v32-inplay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        match, research: state.researchByMatch[match.id] || null,
+        controls: estimatedControlsForMatch(match),
+        drawState: drawStateBeforeMatch(match),
+        inPlay: { minutesPlayed: minutes, currentH: h, currentA: a },
+      }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error);
+    const ip = payload.inPlay;
+    const s = payload.states;
+    els.inPlayResult.innerHTML = `
+      <div class="inplay-stats"><div style="margin-bottom:4px">${minutes}' ${h}-${a}</div>
+        <div>剩余λ <strong>主${ip.lambdaRemaining.home}</strong> <strong>客${ip.lambdaRemaining.away}</strong> · 衰减${(ip.decayFactor*100).toFixed(0)}%</div>
+        <div>下一球 主<strong>${fmtPct(payload.nextGoalProb.home)}</strong> 客<strong>${fmtPct(payload.nextGoalProb.away)}</strong> 无<strong>${fmtPct(payload.nextGoalProb.noGoal)}</strong></div></div>
+      <div class="inplay-wdl">全场 主<strong>${fmtPct(s.h)}</strong> 平<strong>${fmtPct(s.d)}</strong> 客<strong>${fmtPct(s.a)}</strong></div>
+      <div class="inplay-windows"><div>5min 主${fmtPct(payload.window5min.win)} 平${fmtPct(payload.window5min.draw)} 客${fmtPct(payload.window5min.loss)}</div>
+        <div>10min 主${fmtPct(payload.window10min.win)} 平${fmtPct(payload.window10min.draw)} 客${fmtPct(payload.window10min.loss)}</div>
+        <div>20min 主${fmtPct(payload.window20min.win)} 平${fmtPct(payload.window20min.draw)} 客${fmtPct(payload.window20min.loss)}</div></div>`;
+  } catch (e) { els.inPlayResult.innerHTML = `计算失败：${e.message}`; }
+}
+
+function toggleInPlay() {
+  inPlayActive = !inPlayActive;
+  if (inPlayActive) {
+    els.inPlayToggleBtn.textContent = "停止";
+    els.inPlayToggleBtn.style.background = "#c00";
+    els.inPlayRefreshBtn.style.display = "inline-block";
+    els.inPlayRefreshBtn.disabled = false;
+    fetchLiveData();
+    inPlayTimer = setInterval(fetchLiveData, 20000);
+  } else {
+    els.inPlayToggleBtn.textContent = "启动实时";
+    els.inPlayToggleBtn.style.background = "";
+    els.inPlayRefreshBtn.style.display = "none";
+    els.inPlayRefreshBtn.disabled = true;
+    els.inPlayResult.innerHTML = `<div style="color:#999;text-align:center;padding:12px">实时赛况已停止。</div>`;
+    if (inPlayTimer) { clearInterval(inPlayTimer); inPlayTimer = null; }
+  }
+}
+
+if (els.inPlayToggleBtn) els.inPlayToggleBtn.addEventListener("click", toggleInPlay);
+if (els.inPlayRefreshBtn) els.inPlayRefreshBtn.addEventListener("click", fetchLiveData);
+
+// Day plan in-play — auto-pick first live match from selected date
+const dayInPlayEls = {
+  panel: $("#dayInPlayPanel"),
+  countdown: $("#dayInPlayCountdown"),
+  toggleBtn: $("#dayInPlayToggleBtn"),
+  refreshBtn: $("#dayInPlayRefreshBtn"),
+  result: $("#dayInPlayResult"),
+};
+let dayInPlayActive = false;
+let dayInPlayTimer = null;
+
+function getFirstLiveMatch(matches) {
+  const now = new Date();
+  return matches.find(m => {
+    if (!m.matchDate) return false;
+    const ko = new Date(`${m.matchDate}T${String(m.matchTime || "00:00:00").slice(0, 8)}`);
+    return (now - ko) / 60000 >= -5 && (now - ko) / 60000 <= 150;
+  }) || null;
+}
+
+function updateDayInPlay(dayMatches) {
+  if (!dayInPlayEls.panel) return; // not on day plan page
+  const liveMatch = getFirstLiveMatch(dayMatches || []);
+  if (!liveMatch) {
+    dayInPlayEls.toggleBtn.disabled = true;
+    dayInPlayEls.toggleBtn.textContent = "暂无进行中比赛";
+    const next = (dayMatches || []).find(m => {
+      if (!m.matchDate) return false;
+      return new Date(`${m.matchDate}T${String(m.matchTime || "00:00:00").slice(0, 8)}`) > new Date();
+    });
+    if (next) {
+      const ko = new Date(`${next.matchDate}T${String(next.matchTime || "00:00:00").slice(0, 8)}`);
+      const h = Math.floor((ko - new Date()) / 3600000);
+      const m = Math.floor(((ko - new Date()) % 3600000) / 60000);
+      dayInPlayEls.countdown.textContent = `${next.homeShort} vs ${next.awayShort} · ${h}h${m}m后开赛`;
+    }
+    return;
+  }
+  dayInPlayEls.countdown.textContent = `${liveMatch.homeShort} vs ${liveMatch.awayShort} · 进行中`;
+  if (!dayInPlayActive) {
+    dayInPlayEls.toggleBtn.disabled = false;
+    dayInPlayEls.toggleBtn.textContent = "启动实时";
+  }
+  dayInPlayEls.panel._liveMatch = liveMatch;
+}
+
+async function dayFetchLiveData() {
+  if (!dayInPlayActive) return;
+  const match = dayInPlayEls.panel._liveMatch;
+  if (!match) return;
+  try {
+    let minutes = 0, h = 0, a = 0;
+    const ko = new Date(`${match.matchDate}T${String(match.matchTime || "00:00:00").slice(0, 8)}`);
+    minutes = Math.min(Math.max(0, Math.floor((new Date() - ko) / 60000)), 120);
+    dayInPlayEls.countdown.textContent = `${minutes}' ${h}-${a}`;
+    const response = await fetch("/api/v32-inplay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        match, research: state.researchByMatch[match.id] || null,
+        controls: estimatedControlsForMatch(match),
+        drawState: drawStateBeforeMatch(match),
+        inPlay: { minutesPlayed: minutes, currentH: h, currentA: a },
+      }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error);
+    const ip = payload.inPlay;
+    const s = payload.states;
+    dayInPlayEls.result.innerHTML = `
+      <div class="inplay-stats"><div style="margin-bottom:4px">${minutes}' ${h}-${a}</div>
+        <div>剩余λ <strong>主${ip.lambdaRemaining.home}</strong> <strong>客${ip.lambdaRemaining.away}</strong> · 衰减${(ip.decayFactor*100).toFixed(0)}%</div>
+        <div>下一球 主<strong>${fmtPct(payload.nextGoalProb.home)}</strong> 客<strong>${fmtPct(payload.nextGoalProb.away)}</strong> 无<strong>${fmtPct(payload.nextGoalProb.noGoal)}</strong></div></div>
+      <div class="inplay-wdl">全场 主<strong>${fmtPct(s.h)}</strong> 平<strong>${fmtPct(s.d)}</strong> 客<strong>${fmtPct(s.a)}</strong></div>
+      <div class="inplay-windows"><div>5min 主${fmtPct(payload.window5min.win)} 平${fmtPct(payload.window5min.draw)} 客${fmtPct(payload.window5min.loss)}</div>
+        <div>10min 主${fmtPct(payload.window10min.win)} 平${fmtPct(payload.window10min.draw)} 客${fmtPct(payload.window10min.loss)}</div>
+        <div>20min 主${fmtPct(payload.window20min.win)} 平${fmtPct(payload.window20min.draw)} 客${fmtPct(payload.window20min.loss)}</div></div>`;
+  } catch (e) { dayInPlayEls.result.innerHTML = `计算失败：${e.message}`; }
+}
+
+function dayToggleInPlay() {
+  dayInPlayActive = !dayInPlayActive;
+  if (dayInPlayActive) {
+    dayInPlayEls.toggleBtn.textContent = "停止";
+    dayInPlayEls.toggleBtn.style.background = "#c00";
+    dayInPlayEls.refreshBtn.style.display = "inline-block";
+    dayFetchLiveData();
+    dayInPlayTimer = setInterval(dayFetchLiveData, 20000);
+  } else {
+    dayInPlayEls.toggleBtn.textContent = "启动实时";
+    dayInPlayEls.toggleBtn.style.background = "";
+    dayInPlayEls.refreshBtn.style.display = "none";
+    dayInPlayEls.result.innerHTML = `<div style="color:#999;text-align:center;padding:12px">实时赛况已停止。</div>`;
+    if (dayInPlayTimer) { clearInterval(dayInPlayTimer); dayInPlayTimer = null; }
+  }
+}
+
+if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.addEventListener("click", dayToggleInPlay);
+if (dayInPlayEls.refreshBtn) dayInPlayEls.refreshBtn.addEventListener("click", dayFetchLiveData);
+
+// Hook into renderDayPlan to update the in-play panel
+const origRenderDayPlan = renderDayPlan;
+renderDayPlan = function() {
+  origRenderDayPlan();
+  if (state.activeView !== "dayplan") return;
+  const dayMatches = state.matches.filter(m => matchPlanDate(m) === state.dayPlan.date);
+  updateDayInPlay(dayMatches);
+};
+
+const origRenderAll = renderAll;
+renderAll = function() {
+  origRenderAll();
+  if (state.activeView === "workbench") showInPlayCountdown();
+};
 els.parsePasteBtn.addEventListener("click", parsePastedJson);
 els.exportModelBtn.addEventListener("click", exportModelSnapshot);
 els.importModelBtn.addEventListener("click", importModelFromText);
@@ -2758,6 +3093,7 @@ els.dayPlanExportBtn.addEventListener("click", exportDayPlanForAI);
 els.dayPlanClearBtn.addEventListener("click", clearDayPlan);
 els.simGenerateBtn.addEventListener("click", generateSimulation);
 els.simFetchResultsBtn.addEventListener("click", syncSimulationResults);
+els.simCLVBtn.addEventListener("click", captureClosingLine);
 els.simSettleBtn.addEventListener("click", settleSimulation);
 els.simClearBtn.addEventListener("click", clearSimulation);
 window.addEventListener("pagehide", sendPersistBeacon);

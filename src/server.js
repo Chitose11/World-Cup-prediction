@@ -789,6 +789,60 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  if (url.pathname === "/api/clv/record" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const ledger = readCLVLedger();
+      const record = {
+        match_id: body.match_id,
+        kickoff_time: body.kickoff_time,
+        target_market: body.target_market || "胜平负",
+        selection: body.selection,
+        selection_key: body.selection_key || "h",
+        bet_time: body.bet_time || new Date().toISOString(),
+        taken_odds: body.taken_odds,
+        closing_odds: null,
+        clv: null,
+        status: "pending",
+      };
+      ledger.push(record);
+      writeCLVLedger(ledger);
+      json(res, 200, { ok: true, recorded: ledger.length });
+      return;
+    } catch (error) { json(res, 500, { ok: false, error: error.message }); return; }
+  }
+
+  if (url.pathname === "/api/clv/ledger") {
+    const ledger = readCLVLedger();
+    const pending = ledger.filter(r => r.status === "pending").length;
+    const settled = ledger.filter(r => r.status === "settled" || r.status === "settled_fallback");
+    const avgCLV = settled.length ? settled.reduce((s, r) => s + (r.clv || 0), 0) / settled.length : 0;
+    const positiveCLV = settled.filter(r => (r.clv || 0) > 0).length;
+    json(res, 200, { ok: true, total: ledger.length, pending, settled: settled.length, avgCLV: +avgCLV.toFixed(2), positiveCLV, pctPositive: settled.length ? +(positiveCLV / settled.length * 100).toFixed(1) : 0, records: ledger });
+    return;
+  }
+
+  if (url.pathname === "/api/anysport/live") {
+    try {
+      const { getLiveMatches, getAPIConfigured } = await import("./anysport-service.js");
+      if (!getAPIConfigured()) { json(res, 503, { ok: false, error: "ANYSPORT_API_KEY not configured" }); return; }
+      const params = new URL(url, `http://localhost`).searchParams;
+      const leagueId = params.get("league_id") || "";
+      const result = await getLiveMatches(leagueId);
+      json(res, result.ok ? 200 : 502, result);
+      return;
+    } catch (error) { json(res, 500, { ok: false, error: error.message }); return; }
+  }
+
+  if (url.pathname === "/api/v32-inplay") {
+    try {
+      const body = req.method === "POST" ? await readJsonBody(req) : {};
+      const { buildInPlayModel } = await import("./v32-engine.js");
+      json(res, 200, buildInPlayModel(body));
+    } catch (error) { json(res, 500, { ok: false, error: error.message }); return; }
+    return;
+  }
+
   if (url.pathname === "/api/v32-model") {
     try {
       const body = req.method === "POST" ? await readJsonBody(req) : {};
@@ -834,6 +888,8 @@ export function startServer(options = {}) {
       const address = server.address();
       const actualPort = typeof address === "object" && address ? address.port : port;
       console.log(`Sporttery V3.2 Workbench running at http://127.0.0.1:${actualPort}`);
+      // Phase 1.2: auto-monitor daemon — silent refresh every 30 min, notify on edge surge
+      startAutoMonitor();
       resolve({ server, port: actualPort });
     };
     server.once("error", onError);
@@ -844,6 +900,104 @@ export function startServer(options = {}) {
 
 const isDirectRun = process.argv[1]
   && normalize(fileURLToPath(import.meta.url)) === normalize(process.argv[1]);
+
+// ===== CLV Ledger (Layer 1: Immutable Ledger) =====
+const { readFileSync, writeFileSync, existsSync, mkdirSync } = await import("fs");
+const appDataPath = (process.env.APPDATA || process.env.XDG_DATA_HOME || root);
+const CLV_LEDGER_DIR = join(appDataPath, "sporttery-v32-workbench");
+const CLV_LEDGER_PATH = join(CLV_LEDGER_DIR, "clv_ledger.json");
+
+function readCLVLedger() {
+  try { return JSON.parse(readFileSync(CLV_LEDGER_PATH, "utf-8")); }
+  catch { return []; }
+}
+function writeCLVLedger(records) {
+  if (!existsSync(CLV_LEDGER_DIR)) mkdirSync(CLV_LEDGER_DIR, { recursive: true });
+  writeFileSync(CLV_LEDGER_PATH, JSON.stringify(records, null, 2), "utf-8");
+}
+
+// ===== Edge Monitor + CLV Snapshot Cache (for T-10 fallback) =====
+let lastOddsSnapshot = {};
+let lastSnapshotTime = null;
+
+function captureOddsSnapshot(matches) {
+  for (const m of matches) {
+    const h = m.pools?.had?.find(i => i.key === "h")?.odds;
+    const d = m.pools?.had?.find(i => i.key === "d")?.odds;
+    const a = m.pools?.had?.find(i => i.key === "a")?.odds;
+    if (h && d && a) lastOddsSnapshot[String(m.id)] = { h, d, a, capturedAt: new Date().toISOString() };
+  }
+  lastSnapshotTime = new Date().toISOString();
+}
+
+// ===== Layer 2+3: Chrono Daemon + Snapshot & Fallback =====
+function startAutoMonitor() {
+  const SCAN_MS = 60 * 1000; // 1 min scan
+  setInterval(async () => {
+    try {
+      const had = await fetchSporttery("had");
+      if (!had.ok || !had.matches?.length) return;
+
+      // Update edge monitor snapshot (for T-10 fallback)
+      captureOddsSnapshot(had.matches);
+
+      const now = Date.now();
+      const ledger = readCLVLedger();
+      let updated = false;
+
+      for (const record of ledger) {
+        if (record.status !== "pending") continue;
+        const kickoff = new Date(record.kickoff_time).getTime();
+        const minutesToKO = (kickoff - now) / 60000;
+        // Trigger at T-5: capture closing odds
+        if (minutesToKO <= 5 && minutesToKO > -30 && !record.closing_odds) {
+          const mid = had.matches.find(m => String(m.id) === String(record.match_id));
+          if (mid) {
+            const playOdds = mid.pools?.[record.target_market === "让球胜平负" ? "hhad" : "had"];
+            const sel = playOdds?.find(i => i.key === record.selection_key)?.odds;
+            if (sel) {
+              record.closing_odds = sel;
+              record.clv = ((record.taken_odds / sel) - 1) * 100;
+              record.status = "settled";
+              record.settled_at = new Date().toISOString();
+              updated = true;
+            }
+          }
+        }
+        // Fallback: T-10 or earlier snapshot if still not settled
+        if (minutesToKO <= -10 && !record.closing_odds) {
+          const snap = lastOddsSnapshot[String(record.match_id)];
+          if (snap) {
+            const sel = snap[record.selection_key] || snap.h;
+            if (sel) {
+              record.closing_odds = sel;
+              record.clv = ((record.taken_odds / sel) - 1) * 100;
+              record.status = "settled_fallback";
+              record.settled_at = new Date().toISOString();
+              updated = true;
+            }
+          }
+        }
+      }
+      if (updated) writeCLVLedger(ledger);
+
+      // Edge surge detection
+      const changed = [];
+      for (const match of had.matches) {
+        const favEdge = Math.abs((1/(match.pools?.had?.find(i=>i.key==="h")?.odds||2)) - (1/(match.pools?.had?.find(i=>i.key==="a")?.odds||2)));
+        const key = match.id || match.number;
+        const prev = lastEdgeSnapshot[key]?.h ? Math.abs((1/lastEdgeSnapshot[key].h) - (1/lastEdgeSnapshot[key].a)) : undefined;
+        if (prev !== undefined && Math.abs(favEdge - prev) > 0.05) {
+          changed.push({ key, home: match.homeShort, away: match.awayShort, prevEdge: prev, newEdge: favEdge });
+        }
+      }
+      if (changed.length) {
+        console.log(`[EDGE-SURGE] ${new Date().toISOString()} — ${changed.length} matches:`,
+          changed.map(c => `${c.home} vs ${c.away}`).join(", "));
+      }
+    } catch (e) { /* silent */ }
+  }, SCAN_MS);
+}
 
 if (isDirectRun) {
   startServer().catch((error) => {

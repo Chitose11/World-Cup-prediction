@@ -192,6 +192,99 @@ const CRS_KEYS = [
   ["s02s04", 2, 4], ["s00s05", 0, 5], ["s01s05", 1, 5], ["s02s05", 2, 5],
 ];
 
+// ===== Phase 2.2: In-Play Dynamic Poisson Engine =====
+
+function decayLambda(lambdaFull, minutesPlayed, totalMinutes = 90) {
+  // Non-linear time decay with injury-time tail boost (Weibull-like)
+  const remaining = Math.max(1, totalMinutes - minutesPlayed);
+  const linear = lambdaFull * (remaining / totalMinutes);
+  // Tail boost: last 15 minutes have ~1.3x effective scoring rate
+  const tailBoost = remaining <= 15 ? 1 + 0.3 * ((15 - remaining) / 15) : 1.0;
+  // First 5 minutes also slightly suppressed (teams settling)
+  const earlySuppress = minutesPlayed < 5 ? 0.85 : 1.0;
+  return linear * tailBoost * earlySuppress;
+}
+
+function buildInPlayScoreMatrix(lambdaHomeFull, lambdaAwayFull, currentH, currentA, minutesPlayed, profileName, maxGoals = 5) {
+  // Truncated score matrix for remaining time
+  const profile = PROFILES[profileName] || PROFILES.default;
+  const lambdaH_rem = decayLambda(lambdaHomeFull, minutesPlayed);
+  const lambdaA_rem = decayLambda(lambdaAwayFull, minutesPlayed);
+  const scores = [];
+  let total = 0;
+  const homeFav = lambdaH_rem >= lambdaA_rem;
+  const states = [
+    { weight: profile.n, h: lambdaH_rem, a: lambdaA_rem },
+    { weight: profile.l, h: 0.82 * lambdaH_rem, a: 0.82 * lambdaA_rem },
+    { weight: profile.c, h: homeFav ? 1.35 * lambdaH_rem : 0.90 * lambdaH_rem, a: homeFav ? 0.90 * lambdaA_rem : 1.35 * lambdaA_rem },
+  ];
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      const prob = states.reduce((sum, s) => sum + s.weight * poisson(h, s.h) * poisson(a, s.a), 0);
+      // Truncate: can't score fewer than current score (if any)
+      const finalH = currentH + h;
+      const finalA = currentA + a;
+      scores.push({ h: finalH, a: finalA, prob });
+      total += prob;
+    }
+  }
+  return scores.map(s => ({ ...s, prob: s.prob / (total || 1) }));
+}
+
+export function buildInPlayModel({ match = {}, research = null, controls = {}, drawState = {}, inPlay = {} }) {
+  // inPlay: { minutesPlayed, currentH, currentA }
+  const minutesPlayed = Number(inPlay.minutesPlayed) || 0;
+  const currentH = Number(inPlay.currentH) || 0;
+  const currentA = Number(inPlay.currentA) || 0;
+
+  // Use the full pre-match model to get base lambdas and profile
+  const preModel = buildFullV32Model({ match, research, controls, drawState });
+  const baseLambdas = preModel.model.meta.lambdas || { home: 1.3, away: 1.0 };
+  const profile = preModel.model.meta.profile || "default";
+  const tempoFactor = preModel.model.meta.tempo === "slow" ? 0.9 : preModel.model.meta.tempo === "open" ? 1.08 : 1;
+
+  const lambdaHomeFull = baseLambdas.home * tempoFactor;
+  const lambdaAwayFull = baseLambdas.away * tempoFactor;
+  const lambdaH_rem = decayLambda(lambdaHomeFull, minutesPlayed);
+  const lambdaA_rem = decayLambda(lambdaAwayFull, minutesPlayed);
+
+  const scores = buildInPlayScoreMatrix(lambdaHomeFull, lambdaAwayFull, currentH, currentA, minutesPlayed, profile);
+  const states = sumStates(scores);
+
+  return {
+    ok: true,
+    modelVersion: "World Cup V3.3 r6 In-Play",
+    inPlay: {
+      minutesPlayed,
+      currentScore: { h: currentH, a: currentA },
+      lambdaRemaining: { home: +lambdaH_rem.toFixed(4), away: +lambdaA_rem.toFixed(4) },
+      lambdaFull: { home: +lambdaHomeFull.toFixed(2), away: +lambdaAwayFull.toFixed(2) },
+      decayFactor: +(minutesPlayed > 0 ? lambdaH_rem / lambdaHomeFull : 1).toFixed(3),
+    },
+    states,
+    nextGoalProb: {
+      home: scores.filter(s => s.h > currentH && s.a === currentA).reduce((sum, s) => sum + s.prob, 0),
+      away: scores.filter(s => s.a > currentA && s.h === currentH).reduce((sum, s) => sum + s.prob, 0),
+      noGoal: scores.filter(s => s.h === currentH && s.a === currentA).reduce((sum, s) => sum + s.prob, 0),
+    },
+    // Upcoming events in 5-min windows
+    window5min: buildTimeWindow(scores, currentH, currentA, minutesPlayed, 5),
+    window10min: buildTimeWindow(scores, currentH, currentA, minutesPlayed, 10),
+    window20min: buildTimeWindow(scores, currentH, currentA, minutesPlayed, 20),
+  };
+}
+
+function buildTimeWindow(scores, currentH, currentA, minutesPlayed, windowMin) {
+  // Approximate: scale remaining score probabilities by window ratio
+  const remaining = Math.max(1, 90 - minutesPlayed);
+  const ratio = Math.min(1, windowMin / remaining);
+  // Return WDL for the time window
+  const win = scores.filter(s => s.h > s.a).reduce((sum, s) => sum + s.prob * ratio, 0);
+  const draw = scores.filter(s => s.h === s.a).reduce((sum, s) => sum + s.prob, 0);
+  const loss = scores.filter(s => s.h < s.a).reduce((sum, s) => sum + s.prob * ratio, 0);
+  return { win: +win.toFixed(4), draw: +draw.toFixed(4), loss: +(1 - win - draw).toFixed(4) };
+}
+
 export function buildFullV32Model({ match = {}, research = null, controls = {}, drawState = {} }) {
   const homeKey = normalizeTeam(match.home || match.homeShort || "");
   const awayKey = normalizeTeam(match.away || match.awayShort || "");
@@ -204,6 +297,9 @@ export function buildFullV32Model({ match = {}, research = null, controls = {}, 
   const stageMul = STAGE_MULTIPLIERS[matchStage] || STAGE_MULTIPLIERS.group;
   const motivMod = MOTIVATION_MODIFIERS[motivation] || MOTIVATION_MODIFIERS.neutral;
   const signals = extractSignals(text, homeKey, awayKey, market, stageMul, motivMod);
+  // Phase 1.1: LLM/Research penalty feedback — modify lambda from structured research parsing
+  const researchPenalty = parseResearchPenalty(research);
+  signals.researchPenalty = researchPenalty;
   const strength = buildStrength(home, away, market, signals);
   const sij = strength.home.baseStrength - strength.away.baseStrength;
   const p0 = buildP0({ home, away, market, sij, signals });
@@ -437,6 +533,46 @@ function researchText(research) {
       .filter(Boolean).join(" "))
     .join(" ")
     .toLowerCase();
+}
+
+function parseResearchPenalty(research) {
+  // Parse structured penalty from research text — feeds back into model lambda
+  const penalties = [];
+  const allText = researchText(research);
+  if (!allText) return penalties;
+
+  const patterns = [
+    // Injury/absence → attacker/defender lambda penalty
+    { regex: /(key|star|top|核心|主力)\s+(striker|forward|winger|attacker|射手|前锋|边锋|攻击手|中锋)\s+(out|injured|absent|unavailable|doubtful|缺阵|伤停|因伤|受伤|无缘)/i, team: "favorite", action: "injuredForward", value: -0.12 },
+    { regex: /(key|star|top|核心|主力)\s+(striker|forward|winger|attacker|射手|前锋|边锋|攻击手|中锋)\s+(out|injured|absent|unavailable|doubtful|缺阵|伤停|因伤|受伤|无缘)/i, team: "underdog", action: "injuredForward", value: -0.08 },
+    { regex: /(defender|centre.back|goalkeeper|后卫|门将|中卫)\s.*(out|injured|absent|unavailable|doubtful|缺阵|伤停|因伤|受伤|无缘)/i, team: "favorite", action: "injuredDefense", value: -0.06 },
+    { regex: /(defender|centre.back|goalkeeper|后卫|门将|中卫)\s.*(out|injured|absent|unavailable|doubtful|缺阵|伤停|因伤|受伤|无缘)/i, team: "underdog", action: "injuredDefense", value: -0.10 },
+    // Suspensions
+    { regex: /(suspended|banned|suspension|禁赛|停赛)/i, team: "favorite", action: "suspension", value: -0.08 },
+    { regex: /(suspended|banned|suspension|禁赛|停赛)/i, team: "underdog", action: "suspension", value: -0.06 },
+    // Motivation/rotation
+    { regex: /(rotate|rotation|rest|rotated|rested|轮换|留力|替补)/i, team: "favorite", action: "rotation", value: -0.06 },
+    // Goalkeeper overperformance potential
+    { regex: /(goalkeeper|keeper|门将).*(outstanding|brilliant|heroic|phenomenal|神勇|神扑|屡献)/i, team: "underdog", action: "keeperOverperformance", value: -0.04 },
+    // Red card risk
+    { regex: /(red.card|sent.off|dismissed|罚下|红牌)/i, team: "favorite", action: "redCardRisk", value: -0.10 },
+  ];
+
+  for (const { regex, team, action, value } of patterns) {
+    if (regex.test(allText)) {
+      penalties.push({ team, action, value, reason: `${team} team: ${action}` });
+    }
+  }
+
+  // Cap total penalties
+  const favPenalty = penalties.filter(p => p.team === "favorite").reduce((s, p) => s + p.value, 0);
+  const dogPenalty = penalties.filter(p => p.team === "underdog").reduce((s, p) => s + p.value, 0);
+  return {
+    penalties,
+    favoriteModifier: clamp(1 + favPenalty, 0.80, 1.10),
+    underdogModifier: clamp(1 + dogPenalty, 0.80, 1.10),
+    totalSignalCount: penalties.length,
+  };
 }
 
 function extractSignals(text, homeKey, awayKey, market, stageMul = STAGE_MULTIPLIERS.group, motivMod = MOTIVATION_MODIFIERS.neutral) {
@@ -737,23 +873,35 @@ function applyV33LambdaAdjustments(lambdas, signals) {
   const result = { ...lambdas };
   const favoriteKey = signals.favoriteSide === "a" ? "away" : "home";
   const underdogKey = favoriteKey === "home" ? "away" : "home";
+
+  // Combined tactical penalty stack — merge before applying to avoid chain-multiplication collapse
+  let favTacticalMult = 1.0;
+  let dogTacticalMult = 1.0;
   const interactionMul = signals.interactionLambdaMultipliers || { favorite: 1, underdog: 1 };
-  result[favoriteKey] *= interactionMul.favorite;
-  result[underdogKey] *= interactionMul.underdog;
+  favTacticalMult *= interactionMul.favorite;
+  dogTacticalMult *= interactionMul.underdog;
   if (signals.unstableFavorite) {
     const unstableScale = signals.interactionWeakOpponent ? 0.5 : 1;
-    result[favoriteKey] *= 1 - 0.04 * unstableScale;
-    result[underdogKey] *= 1 + 0.02 * unstableScale;
+    favTacticalMult *= 1 - 0.04 * unstableScale;
+    dogTacticalMult *= 1 + 0.02 * unstableScale;
   }
-  if (signals.highDepthFavorite) {
-    result[favoriteKey] *= 1.06;
-  }
-  // P3: dose-driven lambda adjustments
   if (signals.lowBlockPenaltyScore > 0.15) {
     const effective = signals.lowBlockPenaltyScore * signals.opponentGrade;
-    result[favoriteKey] *= 1 - 0.08 * effective;
-    result[underdogKey] *= 1 + 0.08 * effective;
+    favTacticalMult *= 1 - 0.08 * effective;
+    dogTacticalMult *= 1 + 0.08 * effective;
   }
+  if (signals.researchPenalty) {
+    favTacticalMult *= signals.researchPenalty.favoriteModifier;
+    dogTacticalMult *= signals.researchPenalty.underdogModifier;
+  }
+  // Floor: favorite λ cannot drop below 85% of base — prevents cascade collapse
+  favTacticalMult = Math.max(0.85, favTacticalMult);
+
+  result[favoriteKey] *= favTacticalMult;
+  result[underdogKey] *= dogTacticalMult;
+
+  // Positive boosts (separate from tactical penalties)
+  if (signals.highDepthFavorite) result[favoriteKey] *= 1.06;
   if (signals.surgeScore > 0.15) {
     result[favoriteKey] *= 1 + 0.08 * signals.surgeScore;
     result[underdogKey] *= 1 + 0.03 * signals.surgeScore;
@@ -833,6 +981,9 @@ function buildPlayProbabilities(scores, match, profile, tempoFactor, lambdas, si
       else if (score.h === score.a) byPlay.crs.s1sd += score.prob;
     else byPlay.crs.s1sa += score.prob;
   }
+  byPlay.hafu = adjustHafuV33(byPlay.hafu, signals);
+  byPlay.hhad = adjustHandicapV33(byPlay.hhad, handicap, states, signals);
+  byPlay.ttg = adjustTotalGoalsV33(byPlay.ttg, signals);
   return byPlay;
 }
 
