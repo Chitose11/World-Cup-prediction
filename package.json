@@ -1,6 +1,6 @@
 {
   "name": "sporttery-v32-workbench",
-  "version": "0.2.7",
+  "version": "0.3.3",
   "private": true,
   "description": "World Cup V3.2 visual probability workbench with Sporttery odds sync.",
   "type": "module",

@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const STORAGE_KEY = "sporttery-v33-workbench-state";
-const APP_VERSION = "0.2.6";
+const APP_VERSION = "0.3.3";
 const PLAN_SELECTION_VERSION = "model-rules-v2";
 const DEFAULT_SIMULATION = { predictions: [], history: [] };
 const DEFAULT_DAY_PLAN = { date: "", budget: 300, plans: [], generatedAt: null, progress: "", selectionVersion: PLAN_SELECTION_VERSION };
@@ -216,8 +216,11 @@ function escapeHtml(value) {
 }
 
 function setStatus(message, error = false) {
-  els.statusLine.textContent = message;
-  els.statusLine.classList.toggle("error", error);
+  if (!els.statusLine) return;  // DOM not ready
+  try {
+    els.statusLine.textContent = message;
+    els.statusLine.classList.toggle("error", error);
+  } catch (e) { /* non-fatal */ }
 }
 
 function routeViewFromHash() {
@@ -823,7 +826,7 @@ function renderAutoJudge(match) {
   if (!research) {
     els.autoJudgeBox.innerHTML = `
       <div class="auto-title">自动判断：等待联网情报</div>
-      <div class="auto-meta">当前控件来自赔率去水初估；点击右侧“搜索首发/动机”后会自动重判。</div>
+      <div class="auto-meta">当前控件来自赔率去水初估；点击右侧"搜索首发/动机"后会自动重判。</div>
     `;
     return;
   }
@@ -1282,29 +1285,53 @@ function maxUnitsForPick(pick, mode) {
 }
 
 function allocateUnits(totalUnits, picks, mode) {
-  const usableUnits = Math.min(totalUnits, picks.length * 50);
+  // Always allocate EXACTLY totalUnits — conservative spends differently, not less
+  const HARD_CAP = 50; // 竞彩单注上限50倍
   const totalKelly = picks.reduce((sum, pick) => sum + Math.max(0, Number(pick.kellyFraction) || 0), 0);
-  let remaining = usableUnits;
-  const allocated = picks.map((pick) => {
-    const cap = maxUnitsForPick(pick, mode);
-    const share = totalKelly > 0
-      ? Math.max(0, Number(pick.kellyFraction) || 0) / totalKelly
-      : 1 / Math.max(1, picks.length);
-    const units = Math.min(cap, Math.max(1, Math.floor(usableUnits * share)));
-    remaining -= units;
-    return { ...pick, units: Math.max(0, units), unitCap: cap };
+
+  // Build allocation weights: Kelly proportion if available, else confidence tier
+  const weights = picks.map((pick) => {
+    if (totalKelly > 0) return Math.max(0, Number(pick.kellyFraction) || 0) / totalKelly;
+    const tier = { A: 5, B: 3, C: 2, D: 1 }[pick.confidence] || 1;
+    // Conservative: amplify confidence gap (A gets more, C/D get less)
+    // Aggressive: flatten weights for broader coverage
+    return mode === "aggressive" ? Math.sqrt(tier) : tier * tier;
   });
+  const totalWeight = weights.reduce((s, w) => s + w, 0) || picks.length;
+
+  // First pass: proportional allocation, capped at HARD_CAP only
+  let remaining = totalUnits;
+  const allocated = picks.map((pick, i) => {
+    const fair = Math.max(1, Math.min(HARD_CAP, Math.round(totalUnits * weights[i] / totalWeight)));
+    const units = Math.min(fair, remaining);
+    remaining -= units;
+    return { ...pick, units };
+  });
+
+  // Redistribute remaining: fill uncapped picks, prefer high-confidence
   let guard = 0;
-  while (remaining > 0 && guard < 300) {
+  while (remaining > 0 && guard < 2000) {
     const target = allocated
-      .filter((pick) => pick.units < pick.unitCap)
-      .sort((a, b) => ((b.kellyFraction || b.score) / Math.sqrt(b.units + 1)) - ((a.kellyFraction || a.score) / Math.sqrt(a.units + 1)))[0];
-    if (!target) break;
+      .filter(p => p.units < HARD_CAP)
+      .sort((a, b) => ((b.kellyFraction || b.score || (weights[allocated.indexOf(b)] || 1)) / Math.sqrt(b.units + 1))
+                     - ((a.kellyFraction || a.score || (weights[allocated.indexOf(a)] || 1)) / Math.sqrt(a.units + 1)))[0];
+    if (!target) break; // all at HARD_CAP — rare, only with tiny pick count + huge budget
     target.units += 1;
     remaining -= 1;
     guard += 1;
   }
-  return allocated.filter((pick) => pick.units > 0);
+  // Last resort: if ALL at cap, boost highest-weight picks beyond cap (only for extreme budgets)
+  guard = 0;
+  while (remaining > 0 && guard < 2000) {
+    const target = allocated.sort((a, b) =>
+      ((b.kellyFraction || b.score || (weights[allocated.indexOf(b)] || 1)) / Math.sqrt(b.units + 1))
+    - ((a.kellyFraction || a.score || (weights[allocated.indexOf(a)] || 1)) / Math.sqrt(a.units + 1)))[0];
+    target.units += 1;
+    remaining -= 1;
+    guard += 1;
+  }
+
+  return allocated.filter(p => p.units > 0);
 }
 
 function buildRecommendationPlans(match, model, amount) {
@@ -1444,13 +1471,107 @@ function lookupCorrelation(playA, keyA, playB, keyB) {
   return 0; // fallback: independent
 }
 
+// ── Copula chunked progress ─────────────────────────────────
+const copulaEls = {
+  overlay: () => $("#copulaOverlay"),
+  progress: () => $("#copulaProgress"),
+  text: () => $("#copulaProgressText"),
+  cancel: () => $("#copulaCancelBtn"),
+};
+let _activeTaskToken = null;  // task‑scoped cancel token — never leak across tasks
+
+// Wire cancel button once — cancels CURRENT task only
+function initCopulaCancelBtn() {
+  const btn = copulaEls.cancel();
+  if (!btn || btn._bound) return;
+  btn._bound = true;
+  btn.addEventListener("click", () => {
+    if (_activeTaskToken) _activeTaskToken.cancelled = true;
+    btn.setAttribute("hidden", "");
+    copulaEls.text().textContent = "正在取消...";
+  });
+}
+
+// Returns a fresh cancel token bound to THIS task
+function showCopulaOverlay(title) {
+  const o = copulaEls.overlay(); if (!o) return { cancelled: false };
+  const token = { cancelled: false };
+  _activeTaskToken = token;
+  initCopulaCancelBtn();
+  const btn = copulaEls.cancel();
+  if (btn) btn.removeAttribute("hidden");
+  o.querySelector(".copula-overlay-title").textContent = title || "Copula 引擎计算中...";
+  copulaEls.progress().value = 0;
+  copulaEls.text().textContent = "0%";
+  o.removeAttribute("hidden");
+  return token;
+}
+function updateCopulaProgress(pct) {
+  const p = copulaEls.progress(); const t = copulaEls.text();
+  if (p) p.value = pct;
+  if (t) t.textContent = Math.round(pct) + "%";
+}
+function hideCopulaOverlay() {
+  _activeTaskToken = null;
+  copulaEls.overlay()?.setAttribute("hidden", "");
+}
+
+// Chunked batch call to Copula — serial chunks, progress callback
+async function copulaBatchChunked(batchItems, token, onProgress, chunkSize = 500) {
+  const chunks = [];
+  for (let i = 0; i < batchItems.length; i += chunkSize) {
+    chunks.push(batchItems.slice(i, i + chunkSize));
+  }
+  const allResults = [];
+  for (let ci = 0; ci < chunks.length; ci++) {
+    if (token?.cancelled) {
+      // Fill remaining with naive markers
+      for (let ri = ci; ri < chunks.length; ri++) {
+        for (const item of chunks[ri]) {
+          allResults.push({ error: true, message: "用户取消计算" });
+        }
+      }
+      break;
+    }
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 180000); // 3 min per chunk
+      const res = await fetch("http://127.0.0.1:8000/api/v1/pricing/bivariate-parlay/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: chunks[ci] }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (res.ok) {
+        const data = await res.json();
+        const results = data.results || [];
+        allResults.push(...results);
+        if (onProgress) onProgress(((ci + 1) / chunks.length) * 100);
+      } else {
+        throw new Error(`Copula returned ${res.status}`);
+      }
+    } catch (e) {
+      // Fill remaining chunks with naive fallback markers
+      for (let ri = ci; ri < chunks.length; ri++) {
+        for (const item of chunks[ri]) {
+          allResults.push({ error: true, message: e.message });
+        }
+      }
+      if (onProgress) onProgress(100);
+      break; // stop sending — remaining use naive
+    }
+  }
+  return allResults;
+}
+
 async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
   // Collect top-2 candidates per match (cross-play, for 2串1/3串1)
   const matchPool = [];
   for (const match of matches) {
     const model = modelsByMatch[match.id];
     if (!model?.byPlay) continue;
-    const candidates = rankedModelCandidates(match, model, mode, { plays: ["had", "hhad", "ttg", "hafu", "crs"] })
+    const candidates = rankedModelCandidates(match, model, mode, { plays: ["had", "hhad", "ttg", "crs"] })
       .filter(c => c.confidence !== "D" && !(c.play === "had" && (c.selectionTags || []).includes("Danger Zone")) && !c.singleOnly)
       .slice(0, 2);
     if (candidates.length) matchPool.push({ match, candidates });
@@ -1464,8 +1585,13 @@ async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
     for (let j = i + 1; j < matchPool.length; j++) {
       for (const ci of matchPool[i].candidates) {
         for (const cj of matchPool[j].candidates) {
-          const naiveEV = ci.modelProb * cj.modelProb * ci.odds * cj.odds - 1;
-          if (naiveEV <= 0.03) continue; // pre-filter: must have positive naive EV
+          // --- Odds circuit breakers (mirror scan_node.js) ---
+          if (ci.odds > 15 || cj.odds > 15) continue;          // Global: no single leg >15x
+          const comboOdds = ci.odds * cj.odds;
+          if (comboOdds > 225) continue;                        // Cross-match: max 15×15
+          // --- Pre-filter: naive EV threshold ---
+          const naiveEV = ci.modelProb * cj.modelProb * comboOdds - 1;
+          if (naiveEV <= 0.2) continue;                         // Stricter: 0.2 (was 0.03)
           rawLegs.push({
             legs: [
               { matchId: matchPool[i].match.id, home: matchPool[i].match.homeShort, away: matchPool[i].match.awayShort, play: ci.play, key: ci.key, label: ci.label, odds: ci.odds, prob: ci.modelProb },
@@ -1485,20 +1611,21 @@ async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
   }
   if (!rawLegs.length) return null;
 
-  // Single batch call to Copula engine
+  // Chunked batch call to Copula with progress overlay
   let copulaResults = [];
-  try {
-    const res = await fetch("http://127.0.0.1:8000/api/v1/pricing/bivariate-parlay/batch", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: batchItems }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      copulaResults = data.results || [];
+  if (batchItems.length) {
+    const token = showCopulaOverlay(`Copula 串关定价 · ${batchItems.length} 组`);
+    try {
+      copulaResults = await copulaBatchChunked(batchItems, token, updateCopulaProgress);
+    } catch (e) {
+      console.error("Copula batch failed:", e.message);
+      copulaResults = batchItems.map(() => ({ error: true }));
+    } finally {
+      hideCopulaOverlay();
     }
-  } catch (e) { /* Copula offline — fall back to naive */ }
+  }
 
-  // Merge Copula results back to rawLegs, filter REJECT, sort by true EV
+  // Merge Copula results back to rawLegs — strict EV/Kelly filter (mirror scan_node.js)
   const parlays = [];
   for (let k = 0; k < rawLegs.length; k++) {
     const cr = copulaResults[k];
@@ -1506,14 +1633,18 @@ async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
     const trueEV = cr?.expected_value ?? (batchItems[k] ? batchItems[k].prob_A * batchItems[k].prob_B * batchItems[k].odds_A * batchItems[k].odds_B - 1 : 0);
     const comboOdds = rawLegs[k].legs[0].odds * rawLegs[k].legs[1].odds;
     const comboProb = cr?.true_joint_prob ?? rawLegs[k].legs[0].prob * rawLegs[k].legs[1].prob;
-    const kelly = comboOdds > 1 ? Math.max(0, trueEV / (comboOdds - 1)) : 0;
+    // Fractional Kelly: EV/(odds−1), capped at 1% position
+    const rawKelly = comboOdds > 1 ? trueEV / (comboOdds - 1) : 0;
+    const kelly = Math.min(rawKelly * 0.125, 0.01);
+    // Post-Copula filter: EV = prob*odds−1, >0.05 = >5% edge
+    if (trueEV <= 0.05 || kelly <= 0.0005) continue;
     parlays.push({ ...rawLegs[k], comboOdds, comboProb, ev: trueEV, kelly });
   }
   parlays.sort((a, b) => b.ev - a.ev);
   const selected = parlays.slice(0, 4);
   if (!selected.length) return null;
 
-  // Allocate full budget across 4 parlays by Kelly proportion, cap 50 per parlay
+  // Allocate full budget across 4 parlays by Kelly proportion — spend every unit
   const totalUnits = Math.floor(budget / 2);
   const totalKelly = selected.reduce((s, p) => s + p.kelly, 0) || 1;
 
@@ -1525,13 +1656,20 @@ async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
     return { ...p, units: Math.max(0, units) };
   });
 
-  // Distribute leftover units to highest-Kelly parlay not at cap
+  // Distribute leftover units — uncapped first, then bump all if needed
   let guard = 0;
-  while (remaining > 0 && guard < 200) {
+  while (remaining > 0 && guard < 2000) {
     const target = allocated
       .filter(p => p.units < 50)
       .sort((a, b) => b.kelly - a.kelly)[0];
     if (!target) break;
+    target.units += 1;
+    remaining -= 1;
+    guard += 1;
+  }
+  guard = 0;
+  while (remaining > 0 && guard < 2000) {
+    const target = allocated.sort((a, b) => b.kelly - a.kelly)[0];
     target.units += 1;
     remaining -= 1;
     guard += 1;
@@ -1558,20 +1696,43 @@ async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
 
 function buildDayPlan(matches, modelsByMatch, budget, mode) {
   const candidates = selectDayPlanCandidates(matches, modelsByMatch, mode);
-  const requiredUnits = candidates.length;
-  const totalUnits = Math.max(requiredUnits, Math.floor((Number(budget) || 0) / 2));
-  let remaining = Math.min(totalUnits, candidates.length * 50);
-  const baseUnits = candidates.map((pick) => {
-    const unitCap = maxUnitsForPick(pick, mode);
-    remaining -= 1;
-    return { ...pick, units: 1, unitCap };
+  const totalUnits = Math.max(candidates.length, Math.floor((Number(budget) || 0) / 2));
+
+  // Allocate ALL units using confidence-tier weights
+  const HARD_CAP = 50;
+  const totalKelly = candidates.reduce((sum, pick) => sum + Math.max(0, Number(pick.kellyFraction) || 0), 0);
+  const weights = candidates.map((pick) => {
+    if (totalKelly > 0) return Math.max(0, Number(pick.kellyFraction) || 0) / totalKelly;
+    const tier = { A: 5, B: 3, C: 2, D: 1 }[pick.confidence] || 1;
+    return mode === "aggressive" ? Math.sqrt(tier) : tier * tier;
   });
+  const totalWeight = weights.reduce((s, w) => s + w, 0) || candidates.length;
+
+  let remaining = totalUnits;
+  const baseUnits = candidates.map((pick, i) => {
+    const fair = Math.max(1, Math.min(HARD_CAP, Math.round(totalUnits * weights[i] / totalWeight)));
+    const units = Math.min(fair, remaining);
+    remaining -= units;
+    return { ...pick, units };
+  });
+
+  // Redistribute remainder
   let guard = 0;
   while (remaining > 0 && guard < 2000) {
     const target = baseUnits
-      .filter((pick) => pick.units < pick.unitCap)
-      .sort((a, b) => ((b.kellyFraction || b.score) / Math.sqrt(b.units + 1)) - ((a.kellyFraction || a.score) / Math.sqrt(a.units + 1)))[0];
+      .filter(p => p.units < HARD_CAP)
+      .sort((a, b) => ((b.kellyFraction || b.score || (weights[baseUnits.indexOf(b)] || 1)) / Math.sqrt(b.units + 1))
+                     - ((a.kellyFraction || a.score || (weights[baseUnits.indexOf(a)] || 1)) / Math.sqrt(a.units + 1)))[0];
     if (!target) break;
+    target.units += 1;
+    remaining -= 1;
+    guard += 1;
+  }
+  guard = 0;
+  while (remaining > 0 && guard < 2000) {
+    const target = baseUnits.sort((a, b) =>
+      ((b.kellyFraction || b.score) / Math.sqrt(b.units + 1))
+    - ((a.kellyFraction || a.score) / Math.sqrt(a.units + 1)))[0];
     target.units += 1;
     remaining -= 1;
     guard += 1;
@@ -2301,7 +2462,7 @@ function importModelFromText() {
   setModelIoExpanded(true);
   const raw = els.modelSnapshotText.value.trim();
   if (!raw) {
-    els.importModelFile.click();
+    if (els.importModelFile) els.importModelFile.click();
     return;
   }
   try {
@@ -2331,6 +2492,92 @@ function buildSimulationPick(match, model) {
   if (!candidates.length) return null;
   const best = candidates.find((row) => row.confidence === "A" || row.confidence === "B") || candidates[0];
   return best;
+}
+
+async function buildSimulationParlays(matches, stake) {
+  // Collect top-1 candidate per match (exclude HAFU, same as buildParlayPlan)
+  const matchPool = [];
+  for (const match of matches) {
+    const model = state.fullModelByMatch[match.id]?.model;
+    if (!model?.byPlay) continue;
+    const candidates = rankedModelCandidates(match, model, "conservative", { plays: ["had", "hhad", "ttg", "crs"] })
+      .filter(c => c.confidence !== "D" && !(c.play === "had" && (c.selectionTags || []).includes("Danger Zone")) && !c.singleOnly)
+      .slice(0, 1);
+    if (candidates.length) matchPool.push({ match, candidate: candidates[0] });
+  }
+  if (matchPool.length < 2) return [];
+
+  // Build all 2串1 combos + Copula batch
+  const combos = [], batch = [];
+  for (let i = 0; i < matchPool.length; i++) {
+    for (let j = i + 1; j < matchPool.length; j++) {
+      const ci = matchPool[i].candidate, cj = matchPool[j].candidate;
+      if (ci.odds > 15 || cj.odds > 15) continue;
+      const comboOdds = ci.odds * cj.odds;
+      if (comboOdds > 225) continue;
+      const naiveEV = ci.modelProb * cj.modelProb * comboOdds - 1;
+      if (naiveEV <= 0.3) continue;
+      combos.push({
+        legs: [
+          { matchId: matchPool[i].match.id, home: matchPool[i].match.homeShort || matchPool[i].match.home, away: matchPool[i].match.awayShort || matchPool[i].match.away, number: matchPool[i].match.number, play: ci.play, key: ci.key, label: ci.label, odds: ci.odds, prob: ci.modelProb },
+          { matchId: matchPool[j].match.id, home: matchPool[j].match.homeShort || matchPool[j].match.home, away: matchPool[j].match.awayShort || matchPool[j].match.away, number: matchPool[j].match.number, play: cj.play, key: cj.key, label: cj.label, odds: cj.odds, prob: cj.modelProb },
+        ],
+        comboOdds, naiveEV,
+      });
+      batch.push({
+        prob_A: ci.modelProb, prob_B: cj.modelProb,
+        odds_A: ci.odds, odds_B: cj.odds,
+        correlation: 0, bankroll: 1000,
+        kelly_fraction: 0.125, max_position_pct: 0.01, simulations: 100000,
+      });
+    }
+  }
+  if (!combos.length) return [];
+
+  // Chunked Copula call with progress overlay
+  let copulaResults = [];
+  if (batch.length) {
+    const token = showCopulaOverlay(`Copula 模拟盘串关 · ${batch.length} 组`);
+    try {
+      copulaResults = await copulaBatchChunked(batch, token, updateCopulaProgress);
+    } catch (e) {
+      console.error("Copula sim parlay failed:", e.message);
+      copulaResults = batch.map(() => ({ error: true }));
+    } finally {
+      hideCopulaOverlay();
+    }
+  }
+
+  // Filter + sort
+  const filtered = [];
+  for (let k = 0; k < combos.length; k++) {
+    const cr = copulaResults[k];
+    if (cr?.action === "REJECT") continue;
+    const trueEV = cr?.expected_value ?? combos[k].naiveEV;
+    const kelly = combos[k].comboOdds > 1 ? Math.min((trueEV / (combos[k].comboOdds - 1)) * 0.125, 0.01) : 0;
+    if (trueEV <= 0.05 || kelly <= 0.0005) continue;
+    filtered.push({ ...combos[k], ev: trueEV, kelly, jointProb: cr?.true_joint_prob ?? (combos[k].legs[0].prob * combos[k].legs[1].prob) });
+  }
+  filtered.sort((a, b) => b.ev - a.ev);
+  const selected = filtered.slice(0, 4);
+  if (!selected.length) return [];
+
+  // Format as simulation predictions
+  return selected.map((p, idx) => ({
+    id: `parlay-${p.legs[0].matchId}-${p.legs[1].matchId}-${idx}`,
+    type: "parlay",
+    legs: p.legs,
+    comboOdds: p.comboOdds,
+    comboProb: p.jointProb,
+    ev: p.ev,
+    kelly: p.kelly,
+    stake,
+    potentialReturn: stake * p.comboOdds,
+    createdAt: new Date().toISOString(),
+    status: "pending",
+    selectionTags: [],
+    confidence: p.ev > 2 ? "A" : p.ev > 1.3 ? "B" : "C",
+  }));
 }
 
 async function generateSimulation() {
@@ -2384,11 +2631,19 @@ async function generateSimulation() {
         status: "pending",
       });
     }
+    // Append parlay (2串1) predictions
+    let parlayCount = 0;
+    try {
+      const parlays = await buildSimulationParlays(state.matches, stake);
+      predictions.push(...parlays);
+      parlayCount = parlays.length;
+    } catch (e) { console.error('buildSimulationParlays failed:', e.message); }
+
     const existingSettled = state.simulation.history || [];
     state.simulation = { predictions, history: existingSettled };
     await persistState({ immediate: true });
     renderSimulation();
-    setStatus(`已生成 ${predictions.length} 场模拟预测。`);
+    setStatus(`已生成 ${predictions.length - parlayCount} 场单关 + ${parlayCount} 组串关模拟预测。`);
   } catch (error) {
     setStatus(`模拟预测失败：${error.message}`, true);
   } finally {
@@ -2748,7 +3003,10 @@ function renderSimulation() {
     <div class="sim-kpi"><span>命中率</span><strong>${history.length ? fmtPct(winCount / history.length) : "-"}</strong></div>
     ${historyWithCLV.length ? `<div class="sim-kpi"><span>加权CLV</span><strong class="${weightedCLV >= 0 ? "edge-pos" : "edge-neg"}">${weightedCLV >= 0 ? "+" : ""}${weightedCLV.toFixed(1)}%</strong><small>跑赢${historyWithCLV.length}场中${clvPositive}场</small></div>` : ""}
   `;
-  els.simulationFuture.innerHTML = predictions.length ? predictions.map((item) => `
+  const singlePreds = predictions.filter(p => p.type !== "parlay");
+  const parlayPreds = predictions.filter(p => p.type === "parlay");
+  els.simulationFuture.innerHTML = predictions.length
+    ? singlePreds.map((item) => `
     <div class="simulation-row">
       <div class="simulation-row-head">
         <span>${escapeHtml(item.number || "")} ${escapeHtml(item.home)} vs ${escapeHtml(item.away)}</span>
@@ -2768,7 +3026,26 @@ function renderSimulation() {
         <button type="button" data-fill-result="${item.id}">结算本场</button>
       </div>
     </div>
-  `).join("") : `<div class="empty-state">暂无未来预测。同步比赛后点击“生成未来预测”。</div>`;
+    `).join("") + parlayPreds.map((item) => `
+    <div class="simulation-row simulation-row-parlay">
+      <div class="simulation-row-head">
+        <span>🔗 2串1 ${item.confidence === "A" ? "⭐" : ""}</span>
+        <span class="sim-status-pending">待赛</span>
+      </div>
+      <div class="parlay-legs">
+        ${item.legs.map(l => `<div class="parlay-leg"><span class="leg-match">${escapeHtml(l.number || "")} ${escapeHtml(l.home)} vs ${escapeHtml(l.away)}</span><span>${playLabels[l.play]}·${escapeHtml(l.label)} @${l.odds.toFixed(2)}</span></div>`).join('<div class="parlay-x"> × </div>')}
+      </div>
+      <div class="sim-meta">
+        <span>组合赔率 ${item.comboOdds.toFixed(2)}</span>
+        <span>联合概率 ${fmtPct(item.comboProb)}</span>
+        <span>EV ${(item.ev || 0).toFixed(2)}</span>
+        <span>Kelly ${(item.kelly || 0).toFixed(4)}</span>
+        <span>定投 ${fmtMoney(item.stake)}</span>
+        <span>潜在返还 ${fmtMoney(item.potentialReturn)}</span>
+      </div>
+    </div>
+    `).join("")
+    : `<div class="empty-state">暂无未来预测。同步比赛后点击"生成未来预测"。</div>`;
   els.simulationHistory.innerHTML = history.length ? history.map((item) => `
     <div class="simulation-row">
       <div class="simulation-row-head">
@@ -2788,28 +3065,34 @@ function renderSimulation() {
 }
 
 function renderAll() {
-  updateSliderLabels();
-  renderMatches();
-  renderDayPlan();
+  const safe = (label, fn) => { try { fn(); } catch (e) { console.error('renderAll.' + label + ' failed:', e.message); } };
+  safe('updateSliderLabels', updateSliderLabels);
+  safe('renderMatches', renderMatches);
+  safe('renderDayPlan', renderDayPlan);
   const match = selectedMatch();
   const model = match ? modelProbabilities(match) : null;
-  renderHero(match);
-  renderResearch();
-  renderAutoJudge(match);
+  safe('renderHero', () => renderHero(match));
+  safe('renderResearch', renderResearch);
+  safe('renderAutoJudge', () => renderAutoJudge(match));
   if (model) {
-    renderSummary(match, model);
-    renderTable(match, model);
-    renderDecision(match, model);
-    renderRecommendations(match, model);
+    safe('renderSummary', () => renderSummary(match, model));
+    safe('renderTable', () => renderTable(match, model));
+    safe('renderDecision', () => renderDecision(match, model));
+    safe('renderRecommendations', () => renderRecommendations(match, model));
   } else {
-    els.summaryStrip.innerHTML = "";
-    els.oddsTable.innerHTML = `<tr><td colspan="6">请选择比赛。</td></tr>`;
-    renderRecommendations(null, null);
+    safe('renderAll-default', () => {
+      if (els.summaryStrip) els.summaryStrip.innerHTML = "";
+      if (els.oddsTable) els.oddsTable.innerHTML = `<tr><td colspan="6">请选择比赛。</td></tr>`;
+    });
+    safe('renderRecommendations', () => renderRecommendations(null, null));
   }
-  renderSimulation();
+  safe('renderSimulation', renderSimulation);
 }
 
+let _syncInProgress = false;
 async function syncSporttery() {
+  if (_syncInProgress) { setStatus("同步正在进行中，请稍后重试。", true); return; }
+  _syncInProgress = true;
   els.syncBtn.disabled = true;
   setStatus("正在同步 sporttery 赔率...");
   try {
@@ -2823,6 +3106,7 @@ async function syncSporttery() {
     setStatus(`同步失败：${error.message}。可以粘贴 JSON 兜底。`, true);
   } finally {
     els.syncBtn.disabled = false;
+    _syncInProgress = false;
   }
 }
 
@@ -2868,7 +3152,12 @@ function loadMatches(matches, payload = null) {
   state.selectedId = matches[0]?.id || null;
   if (state.selectedId) estimateLambdasFromMarket(selectedMatch());
   persistState();
-  renderAll();
+  try {
+    renderAll();
+  } catch (e) {
+    console.error('renderAll failed:', e);
+    // renderAll crash is non-fatal — data already saved to state
+  }
 }
 
 function parsePastedJson() {
@@ -3126,8 +3415,8 @@ function updateDayInPlay(dayMatches) {
   if (!dayInPlayEls.panel) return; // not on day plan page
   const liveMatch = getFirstLiveMatch(dayMatches || []);
   if (!liveMatch) {
-    dayInPlayEls.toggleBtn.disabled = true;
-    dayInPlayEls.toggleBtn.textContent = "暂无进行中比赛";
+    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.disabled = true;
+    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.textContent = "暂无进行中比赛";
     const next = (dayMatches || []).find(m => {
       if (!m.matchDate) return false;
       return new Date(`${m.matchDate}T${String(m.matchTime || "00:00:00").slice(0, 8)}`) > new Date();
@@ -3136,14 +3425,14 @@ function updateDayInPlay(dayMatches) {
       const ko = new Date(`${next.matchDate}T${String(next.matchTime || "00:00:00").slice(0, 8)}`);
       const h = Math.floor((ko - new Date()) / 3600000);
       const m = Math.floor(((ko - new Date()) % 3600000) / 60000);
-      dayInPlayEls.countdown.textContent = `${next.homeShort} vs ${next.awayShort} · ${h}h${m}m后开赛`;
+      if (dayInPlayEls.countdown) dayInPlayEls.countdown.textContent = `${next.homeShort} vs ${next.awayShort} · ${h}h${m}m后开赛`;
     }
     return;
   }
-  dayInPlayEls.countdown.textContent = `${liveMatch.homeShort} vs ${liveMatch.awayShort} · 进行中`;
+  if (dayInPlayEls.countdown) dayInPlayEls.countdown.textContent = `${liveMatch.homeShort} vs ${liveMatch.awayShort} · 进行中`;
   if (!dayInPlayActive) {
-    dayInPlayEls.toggleBtn.disabled = false;
-    dayInPlayEls.toggleBtn.textContent = "启动实时";
+    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.disabled = false;
+    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.textContent = "启动实时";
   }
   dayInPlayEls.panel._liveMatch = liveMatch;
 }
@@ -3156,7 +3445,7 @@ async function dayFetchLiveData() {
     let minutes = 0, h = 0, a = 0;
     const ko = new Date(`${match.matchDate}T${String(match.matchTime || "00:00:00").slice(0, 8)}`);
     minutes = Math.min(Math.max(0, Math.floor((new Date() - ko) / 60000)), 120);
-    dayInPlayEls.countdown.textContent = `${minutes}' ${h}-${a}`;
+    if (dayInPlayEls.countdown) dayInPlayEls.countdown.textContent = `${minutes}' ${h}-${a}`;
     const response = await fetch("/api/v32-inplay", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -3171,7 +3460,7 @@ async function dayFetchLiveData() {
     if (!payload.ok) throw new Error(payload.error);
     const ip = payload.inPlay;
     const s = payload.states;
-    dayInPlayEls.result.innerHTML = `
+    if (dayInPlayEls.result) dayInPlayEls.result.innerHTML = `
       <div class="inplay-stats"><div style="margin-bottom:4px">${minutes}' ${h}-${a}</div>
         <div>剩余λ <strong>主${ip.lambdaRemaining.home}</strong> <strong>客${ip.lambdaRemaining.away}</strong> · 衰减${(ip.decayFactor*100).toFixed(0)}%</div>
         <div>下一球 主<strong>${fmtPct(payload.nextGoalProb.home)}</strong> 客<strong>${fmtPct(payload.nextGoalProb.away)}</strong> 无<strong>${fmtPct(payload.nextGoalProb.noGoal)}</strong></div></div>
@@ -3179,22 +3468,20 @@ async function dayFetchLiveData() {
       <div class="inplay-windows"><div>5min 主${fmtPct(payload.window5min.win)} 平${fmtPct(payload.window5min.draw)} 客${fmtPct(payload.window5min.loss)}</div>
         <div>10min 主${fmtPct(payload.window10min.win)} 平${fmtPct(payload.window10min.draw)} 客${fmtPct(payload.window10min.loss)}</div>
         <div>20min 主${fmtPct(payload.window20min.win)} 平${fmtPct(payload.window20min.draw)} 客${fmtPct(payload.window20min.loss)}</div></div>`;
-  } catch (e) { dayInPlayEls.result.innerHTML = `计算失败：${e.message}`; }
+  } catch (e) { if (dayInPlayEls.result) dayInPlayEls.result.innerHTML = `计算失败：${e.message}`; }
 }
 
 function dayToggleInPlay() {
   dayInPlayActive = !dayInPlayActive;
   if (dayInPlayActive) {
-    dayInPlayEls.toggleBtn.textContent = "停止";
-    dayInPlayEls.toggleBtn.style.background = "#c00";
-    dayInPlayEls.refreshBtn.style.display = "inline-block";
+    if (dayInPlayEls.toggleBtn) { dayInPlayEls.toggleBtn.textContent = "停止"; dayInPlayEls.toggleBtn.style.background = "#c00"; }
+    if (dayInPlayEls.refreshBtn) dayInPlayEls.refreshBtn.style.display = "inline-block";
     dayFetchLiveData();
     dayInPlayTimer = setInterval(dayFetchLiveData, 20000);
   } else {
-    dayInPlayEls.toggleBtn.textContent = "启动实时";
-    dayInPlayEls.toggleBtn.style.background = "";
-    dayInPlayEls.refreshBtn.style.display = "none";
-    dayInPlayEls.result.innerHTML = `<div style="color:#999;text-align:center;padding:12px">实时赛况已停止。</div>`;
+    if (dayInPlayEls.toggleBtn) { dayInPlayEls.toggleBtn.textContent = "启动实时"; dayInPlayEls.toggleBtn.style.background = ""; }
+    if (dayInPlayEls.refreshBtn) dayInPlayEls.refreshBtn.style.display = "none";
+    if (dayInPlayEls.result) dayInPlayEls.result.innerHTML = `<div style="color:#999;text-align:center;padding:12px">实时赛况已停止。</div>`;
     if (dayInPlayTimer) { clearInterval(dayInPlayTimer); dayInPlayTimer = null; }
   }
 }

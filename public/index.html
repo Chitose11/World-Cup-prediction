@@ -252,6 +252,17 @@
         <button id="saveKeysBtn" type="button">保存</button>
       </div>
     </main>
+
+    <!-- Copula progress overlay -->
+    <div class="copula-overlay" id="copulaOverlay" hidden>
+      <div class="copula-overlay-card">
+        <div class="copula-overlay-title">Copula 引擎计算中...</div>
+        <progress class="copula-progress-bar" id="copulaProgress" value="0" max="100"></progress>
+        <div class="copula-progress-text" id="copulaProgressText">0%</div>
+        <button class="copula-cancel-btn" id="copulaCancelBtn" type="button" hidden>取消</button>
+      </div>
+    </div>
+
     <script src="./app.js"></script>
   </body>
 </html>
