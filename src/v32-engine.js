@@ -53,6 +53,17 @@ const TEAM_DATA = {
   "iraq": { elo: 1660, fifa: 61, title: 0.00005, qf: 0, semi: 0, confed: "AFC", archetype: "mid-tier" },
   "algeria": { elo: 1725, fifa: 36, title: 0.0006, qf: 0, semi: 0, confed: "CAF", archetype: "tactical-resistance" },
   "jordan": { elo: 1605, fifa: 68, title: 0.00003, qf: 0, semi: 0, confed: "AFC", archetype: "mid-tier" },
+  // Finnish league teams (patch)
+  "lahti": { elo: 1580, fifa: 200, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "mid-tier" },
+  "tps turku": { elo: 1550, fifa: 210, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "mid-tier" },
+  "kuopio": { elo: 1620, fifa: 180, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "athletic-resistance" },
+  "vaasa": { elo: 1600, fifa: 190, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "mid-tier" },
+  "ac oulu": { elo: 1540, fifa: 205, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "mid-tier" },
+  "jaro": { elo: 1520, fifa: 215, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "mid-tier" },
+  "inter turku": { elo: 1640, fifa: 170, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "athletic-resistance" },
+  "seinajoen": { elo: 1560, fifa: 195, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "mid-tier" },
+  "mariehamn": { elo: 1500, fifa: 235, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "mid-tier" },
+  "hjk helsinki": { elo: 1700, fifa: 140, title: 0, qf: 0, semi: 0, confed: "UEFA", archetype: "athletic-resistance" },
 };
 
 const S_FINISHERS = new Set(["france", "argentina", "germany"]);
@@ -500,6 +511,25 @@ function normalizeTeam(name) {
   if (/巴拿马|巴拿馬|panama/.test(text)) return "panama";
   if (/乌兹别克|烏茲別克|uzbekistan/.test(text)) return "uzbekistan";
   if (/哥伦比亚|哥倫比亞|colombia/.test(text)) return "colombia";
+  if (/巴西|brazil/.test(text)) return "brazil";
+  if (/瑞士|switzerland/.test(text)) return "switzerland";
+  if (/加拿大|canada/.test(text)) return "canada";
+  if (/波黑|bosnia/.test(text)) return "bosnia-herzegovina";
+  if (/卡塔尔|qatar/.test(text)) return "qatar";
+  if (/苏格兰|scotland/.test(text)) return "scotland";
+  if (/摩洛哥|morocco/.test(text)) return "morocco";
+  if (/海地|haiti/.test(text)) return "haiti";
+  // Finnish teams
+  if (/拉赫蒂|lahti/i.test(text)) return "lahti";
+  if (/TPS|tps|图尔库/i.test(text)) return "tps turku";
+  if (/库奥皮奥|kuopio/i.test(text)) return "kuopio";
+  if (/瓦萨|vaasa/i.test(text)) return "vaasa";
+  if (/奥卢|oulu/i.test(text)) return "ac oulu";
+  if (/雅罗|jaro/i.test(text)) return "jaro";
+  if (/国际图尔|inter turku/i.test(text)) return "inter turku";
+  if (/塞伊奈|seinajoen/i.test(text)) return "seinajoen";
+  if (/玛丽港|mariehamn/i.test(text)) return "mariehamn";
+  if (/赫尔辛基|helsinki/i.test(text)) return "hjk helsinki";
   return text.trim();
 }
 
@@ -539,7 +569,7 @@ function parseResearchPenalty(research) {
   // Parse structured penalty from research text — feeds back into model lambda
   const penalties = [];
   const allText = researchText(research);
-  if (!allText) return penalties;
+  if (!allText) return null;  // null → falsy, prevents NaN propagation in applyV33LambdaAdjustments
 
   const patterns = [
     // Injury/absence → attacker/defender lambda penalty
@@ -844,7 +874,7 @@ function buildCorrections({ p0, sij, signals, controls, drawState }) {
 }
 function chooseLambdas({ sij, p0, controls, signals, motivMod = MOTIVATION_MODIFIERS.neutral, profileName = "default" }) {
   let result;
-  if (Number.isFinite(Number(controls.lambdaHome)) && Number.isFinite(Number(controls.lambdaAway))) {
+  if (Number.isFinite(Number(controls?.lambdaHome)) && Number.isFinite(Number(controls?.lambdaAway))) {
     result = { home: Number(controls.lambdaHome), away: Number(controls.lambdaAway) };
     return applyV33LambdaAdjustments(result, signals);
   }
@@ -860,17 +890,23 @@ function chooseLambdas({ sij, p0, controls, signals, motivMod = MOTIVATION_MODIF
   if (signals.injury) fav *= 0.97;
   if ((signals.eliteOutlet || signals.sFinisherFavorite) && !signals.unstableFavorite) fav *= 1.05;
   result = homeFav ? { home: fav, away: dog } : { home: dog, away: fav };
+  // DEBUG (quiet mode — uncomment for lambda diagnostics):
+  // if (Math.abs(sij) > 0.8) console.error('CHOOSE_LAMBDAS_DEBUG sij='+sij.toFixed(2)+' fav='+fav.toFixed(2)+' dog='+dog.toFixed(2)+' resultBefore='+JSON.stringify(result));
   result = applyV33LambdaAdjustments(result, signals);
+  // if (Math.abs(sij) > 0.8) console.error('CHOOSE_LAMBDAS_DEBUG afterAdjust='+JSON.stringify(result));
   // P9: motivation-driven λ scaling
   result = {
-    home: clamp(result.home * motivMod.lambdaScale, 0.2, 3.4),
-    away: clamp(result.away * motivMod.lambdaScale, 0.2, 3.4),
+    home: clamp(result.home * (motivMod?.lambdaScale ?? 1), 0.2, 3.4),
+    away: clamp(result.away * (motivMod?.lambdaScale ?? 1), 0.2, 3.4),
   };
   return result;
 }
 
 function applyV33LambdaAdjustments(lambdas, signals) {
   const result = { ...lambdas };
+  // NaN guard: ensure base lambdas are valid numbers
+  if (!Number.isFinite(result.home) || result.home <= 0) { console.error('GUARD-TRIGGERED home:', result.home); result.home = 1.15; }
+  if (!Number.isFinite(result.away) || result.away <= 0) { console.error('GUARD-TRIGGERED away:', result.away); result.away = 1.15; }
   const favoriteKey = signals.favoriteSide === "a" ? "away" : "home";
   const underdogKey = favoriteKey === "home" ? "away" : "home";
 
@@ -878,8 +914,11 @@ function applyV33LambdaAdjustments(lambdas, signals) {
   let favTacticalMult = 1.0;
   let dogTacticalMult = 1.0;
   const interactionMul = signals.interactionLambdaMultipliers || { favorite: 1, underdog: 1 };
-  favTacticalMult *= interactionMul.favorite;
-  dogTacticalMult *= interactionMul.underdog;
+  // Sanitize: ensure interaction multipliers are valid numbers, default to 1.0
+  const safeFav = Number.isFinite(interactionMul.favorite) ? interactionMul.favorite : 1;
+  const safeDog = Number.isFinite(interactionMul.underdog) ? interactionMul.underdog : 1;
+  favTacticalMult *= safeFav;
+  dogTacticalMult *= safeDog;
   if (signals.unstableFavorite) {
     const unstableScale = signals.interactionWeakOpponent ? 0.5 : 1;
     favTacticalMult *= 1 - 0.04 * unstableScale;
@@ -890,7 +929,7 @@ function applyV33LambdaAdjustments(lambdas, signals) {
     favTacticalMult *= 1 - 0.08 * effective;
     dogTacticalMult *= 1 + 0.08 * effective;
   }
-  if (signals.researchPenalty) {
+  if (signals.researchPenalty && typeof signals.researchPenalty.favoriteModifier === 'number') {
     favTacticalMult *= signals.researchPenalty.favoriteModifier;
     dogTacticalMult *= signals.researchPenalty.underdogModifier;
   }
@@ -906,6 +945,9 @@ function applyV33LambdaAdjustments(lambdas, signals) {
     result[favoriteKey] *= 1 + 0.08 * signals.surgeScore;
     result[underdogKey] *= 1 + 0.03 * signals.surgeScore;
   }
+  // Ensure non-NaN output
+  if (!Number.isFinite(result.home)) { console.error('FINAL-GUARD home NaN reset:', result.home); result.home = 1.15; }
+  if (!Number.isFinite(result.away)) { console.error('FINAL-GUARD away NaN reset:', result.away); result.away = 1.15; }
   return {
     home: clamp(result.home, 0.2, 3.4),
     away: clamp(result.away, 0.2, 3.4),
@@ -931,6 +973,9 @@ function chooseTempo({ controls, signals }) {
 }
 
 function buildScoreMatrix(lambdaHome, lambdaAway, profileName) {
+  // Sanity check: NaN/zero guard — ensure Poisson has valid positive lambda
+  if (!Number.isFinite(lambdaHome) || lambdaHome <= 0) lambdaHome = 1.15;
+  if (!Number.isFinite(lambdaAway) || lambdaAway <= 0) lambdaAway = 1.15;
   const profile = PROFILES[profileName] || PROFILES.default;
   const homeFav = lambdaHome >= lambdaAway;
   const states = [
@@ -966,6 +1011,7 @@ function buildPlayProbabilities(scores, match, profile, tempoFactor, lambdas, si
   const handicap = Number(match?.hhadGoalLine || 0);
   const crsMap = new Map(CRS_KEYS.map(([key, h, a]) => [`${h}:${a}`, key]));
   for (const score of scores) {
+    if (!Number.isFinite(score.prob)) continue;
     const adjusted = score.h + handicap - score.a;
     if (adjusted > 0) byPlay.hhad.h += score.prob;
     else if (adjusted === 0) byPlay.hhad.d += score.prob;
@@ -1050,6 +1096,8 @@ function normalizeMap(map) {
 }
 
 function buildHafu(lambdaHome, lambdaAway, profileName) {
+  if (!Number.isFinite(lambdaHome) || lambdaHome <= 0) lambdaHome = 1.15;
+  if (!Number.isFinite(lambdaAway) || lambdaAway <= 0) lambdaAway = 1.15;
   const profile = PROFILES[profileName] || PROFILES.default;
   const homeFav = lambdaHome >= lambdaAway;
   const result = { hh: 0, hd: 0, ha: 0, dh: 0, dd: 0, da: 0, ah: 0, ad: 0, aa: 0 };
@@ -1142,12 +1190,14 @@ function poisson(k, lambda) {
 }
 
 function sumStates(scores) {
-  return scores.reduce((acc, score) => {
-    if (score.h > score.a) acc.h += score.prob;
-    else if (score.h === score.a) acc.d += score.prob;
-    else acc.a += score.prob;
-    return acc;
-  }, { h: 0, d: 0, a: 0 });
+  const result = { h: 0, d: 0, a: 0 };
+  for (const score of scores) {
+    const p = Number.isFinite(score.prob) ? score.prob : 0;
+    if (score.h > score.a) result.h += p;
+    else if (score.h === score.a) result.d += p;
+    else result.a += p;
+  }
+  return result;
 }
 
 function normalizeWdl(wdl) {

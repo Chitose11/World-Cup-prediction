@@ -78,12 +78,6 @@ const els = {
   recommendBox: $("#recommendBox"),
   pasteJson: $("#pasteJson"),
   parsePasteBtn: $("#parsePasteBtn"),
-  exportModelBtn: $("#exportModelBtn"),
-  importModelBtn: $("#importModelBtn"),
-  importModelFile: $("#importModelFile"),
-  modelIoPanel: $("#modelIoPanel"),
-  modelIoCloseBtn: $("#modelIoCloseBtn"),
-  modelSnapshotText: $("#modelSnapshotText"),
   dayPlanDateSelect: $("#dayPlanDateSelect"),
   dayPlanBudgetInput: $("#dayPlanBudgetInput"),
   dayPlanGenerateBtn: $("#dayPlanGenerateBtn"),
@@ -252,7 +246,7 @@ function setActiveView(view, updateHash = true) {
 
 function setModelIoExpanded(expanded) {
   state.modelIoExpanded = expanded;
-  els.modelIoPanel.hidden = !expanded;
+  if (els.modelIoPanel) els.modelIoPanel.hidden = !expanded;
 }
 
 function setResearchExpanded(expanded) {
@@ -1266,11 +1260,11 @@ function maxUnitsForPick(pick, mode) {
   if (Number.isFinite(pick.kellyFraction) && pick.kellyFraction > 0) {
     const bankrollUnits = mode === "aggressive" ? 80 : 50;
     const kellyCap = Math.max(1, Math.floor(bankrollUnits * pick.kellyFraction));
-    const hardCap = mode === "aggressive" ? 36 : 22;
+    const hardCap = 50; // 竞彩单注最多50倍=100元
     let cap = Math.min(hardCap, kellyCap);
-    if (pick.play === "crs") cap = Math.min(cap, mode === "aggressive" ? 8 : 3);
-    if (pick.play === "hafu") cap = Math.min(cap, mode === "aggressive" ? 12 : 6);
-    if (pick.selectionTags?.includes("风险折扣")) cap = Math.min(cap, mode === "aggressive" ? 14 : 8);
+    if (pick.play === "crs") cap = Math.min(cap, mode === "aggressive" ? 12 : 5);
+    if (pick.play === "hafu") cap = Math.min(cap, mode === "aggressive" ? 18 : 8);
+    if (pick.selectionTags?.includes("风险折扣")) cap = Math.min(cap, mode === "aggressive" ? 20 : 10);
     return Math.max(1, cap);
   }
   const byConfidence = { A: 50, B: 28, C: 14, D: 6 };
@@ -1429,6 +1423,139 @@ function dayPlanCandidate(match, model, mode) {
   return dayPlanOptionsForMatch(match, model, mode)[0] || null;
 }
 
+// Correlation lookup: play+key → correlation key for Copula engine
+// Correlation map: tournament (WC 2018+2022, n=128) priority, club (EPL 2022-2025, n=1140) fallback
+// Tournament football has distinct correlation structure: draws more predictable, HAD↔TTG weaker
+const CORRELATION_MAP = {
+  // Tournament-derived (WC 2018+2022, 128 matches)
+  "had_h__ttg_s3":  0.09,  "had_d__ttg_s1":  0.18,  // WC: HAD↔TTG much weaker than club
+  "had_h__hafu_hh": 0.59,  "had_d__hafu_dd": 0.77,  // WC: draws+HT draws very strong
+  "had_a__hafu_aa": 0.55,  "had_h__hafu_dh": 0.55,
+  "hafu_dh__had_h": 0.55,  "hafu_hd__had_d": 0.53,
+  "hafu_da__had_a": 0.60,
+  "hafu_hh__ttg_s3":0.19,  "hafu_dd__ttg_s1": 0.20,
+  // Club-derived fallback (EPL 2022-2025, 1140 matches) — for pairs not covered by WC data
+  "hhad_h__had_h":  0.65,  "hhad_h__hafu_hh":0.46, "hhad_h__hafu_dh":0.28,
+  "hhad_d__had_d":  0.14,  "hhad_a__had_a": 0.60,
+};
+function lookupCorrelation(playA, keyA, playB, keyB) {
+  const pairs = [`${playA}_${keyA}__${playB}_${keyB}`, `${playB}_${keyB}__${playA}_${keyA}`];
+  for (const k of pairs) if (CORRELATION_MAP[k] !== undefined) return CORRELATION_MAP[k];
+  return 0; // fallback: independent
+}
+
+async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
+  // Collect top-2 candidates per match (cross-play, for 2串1/3串1)
+  const matchPool = [];
+  for (const match of matches) {
+    const model = modelsByMatch[match.id];
+    if (!model?.byPlay) continue;
+    const candidates = rankedModelCandidates(match, model, mode, { plays: ["had", "hhad", "ttg", "hafu", "crs"] })
+      .filter(c => c.confidence !== "D" && !(c.play === "had" && (c.selectionTags || []).includes("Danger Zone")) && !c.singleOnly)
+      .slice(0, 2);
+    if (candidates.length) matchPool.push({ match, candidates });
+  }
+  if (matchPool.length < 2) return null;
+
+  // Build all 2串1 combos & assemble batch payload for Copula engine
+  const rawLegs = [];
+  const batchItems = [];
+  for (let i = 0; i < matchPool.length; i++) {
+    for (let j = i + 1; j < matchPool.length; j++) {
+      for (const ci of matchPool[i].candidates) {
+        for (const cj of matchPool[j].candidates) {
+          const naiveEV = ci.modelProb * cj.modelProb * ci.odds * cj.odds - 1;
+          if (naiveEV <= 0.03) continue; // pre-filter: must have positive naive EV
+          rawLegs.push({
+            legs: [
+              { matchId: matchPool[i].match.id, home: matchPool[i].match.homeShort, away: matchPool[i].match.awayShort, play: ci.play, key: ci.key, label: ci.label, odds: ci.odds, prob: ci.modelProb },
+              { matchId: matchPool[j].match.id, home: matchPool[j].match.homeShort, away: matchPool[j].match.awayShort, play: cj.play, key: cj.key, label: cj.label, odds: cj.odds, prob: cj.modelProb },
+            ],
+          });
+          batchItems.push({
+            prob_A: ci.modelProb, prob_B: cj.modelProb,
+            odds_A: ci.odds, odds_B: cj.odds,
+            correlation: lookupCorrelation(ci.play, ci.key, cj.play, cj.key),
+            bankroll: budget,
+            kelly_fraction: 0.125, max_position_pct: 0.01, simulations: 100000,
+          });
+        }
+      }
+    }
+  }
+  if (!rawLegs.length) return null;
+
+  // Single batch call to Copula engine
+  let copulaResults = [];
+  try {
+    const res = await fetch("http://127.0.0.1:8000/api/v1/pricing/bivariate-parlay/batch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: batchItems }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      copulaResults = data.results || [];
+    }
+  } catch (e) { /* Copula offline — fall back to naive */ }
+
+  // Merge Copula results back to rawLegs, filter REJECT, sort by true EV
+  const parlays = [];
+  for (let k = 0; k < rawLegs.length; k++) {
+    const cr = copulaResults[k];
+    if (cr?.action === "REJECT") continue;
+    const trueEV = cr?.expected_value ?? (batchItems[k] ? batchItems[k].prob_A * batchItems[k].prob_B * batchItems[k].odds_A * batchItems[k].odds_B - 1 : 0);
+    const comboOdds = rawLegs[k].legs[0].odds * rawLegs[k].legs[1].odds;
+    const comboProb = cr?.true_joint_prob ?? rawLegs[k].legs[0].prob * rawLegs[k].legs[1].prob;
+    const kelly = comboOdds > 1 ? Math.max(0, trueEV / (comboOdds - 1)) : 0;
+    parlays.push({ ...rawLegs[k], comboOdds, comboProb, ev: trueEV, kelly });
+  }
+  parlays.sort((a, b) => b.ev - a.ev);
+  const selected = parlays.slice(0, 4);
+  if (!selected.length) return null;
+
+  // Allocate full budget across 4 parlays by Kelly proportion, cap 50 per parlay
+  const totalUnits = Math.floor(budget / 2);
+  const totalKelly = selected.reduce((s, p) => s + p.kelly, 0) || 1;
+
+  let remaining = totalUnits;
+  const allocated = selected.map(p => {
+    const kellyShare = p.kelly / totalKelly;
+    const units = Math.min(50, Math.max(1, Math.floor(totalUnits * kellyShare)));
+    remaining -= units;
+    return { ...p, units: Math.max(0, units) };
+  });
+
+  // Distribute leftover units to highest-Kelly parlay not at cap
+  let guard = 0;
+  while (remaining > 0 && guard < 200) {
+    const target = allocated
+      .filter(p => p.units < 50)
+      .sort((a, b) => b.kelly - a.kelly)[0];
+    if (!target) break;
+    target.units += 1;
+    remaining -= 1;
+    guard += 1;
+  }
+
+  const active = allocated.filter(p => p.units > 0);
+  const cost = active.reduce((s, p) => s + p.units * 2, 0);
+  const maxReturn = active.reduce((s, p) => s + p.units * 2 * p.comboOdds, 0);
+  const expectedReturn = active.reduce((s, p) => s + p.units * 2 * p.comboOdds * p.comboProb, 0);
+
+  return {
+    mode,
+    title: mode === "aggressive" ? "进取串关方案" : "稳健串关方案",
+    matches: matchPool.length,
+    parlays: active,
+    cost,
+    maxReturn,
+    expectedReturn,
+    maxMultiple: cost ? maxReturn / cost : 0,
+    unused: Math.max(0, budget - cost),
+    selectionVersion: PLAN_SELECTION_VERSION,
+  };
+}
+
 function buildDayPlan(matches, modelsByMatch, budget, mode) {
   const candidates = selectDayPlanCandidates(matches, modelsByMatch, mode);
   const requiredUnits = candidates.length;
@@ -1481,33 +1608,28 @@ function renderRecommendations(match, model) {
     <details class="recommend-plan">
       <summary class="recommend-plan-summary">
         <span class="plan-title">${plan.title}</span>
-        <span class="plan-multiple">${plan.units}倍</span>
+        <span class="plan-multiple">${plan.units}注</span>
         <span class="plan-money">投入 ${fmtMoney(plan.cost)} / 最高返 ${fmtMoney(plan.maxReturn)} / ${plan.maxMultiple.toFixed(1)}倍</span>
         <span class="details-action" aria-hidden="true"></span>
       </summary>
       <div class="recommend-plan-body">
-        <div class="plan-subline">预期返还 ${fmtMoney(plan.expectedReturn)}。${plan.unused ? `因倍数上限未分配 ${fmtMoney(plan.unused)}。` : "预算已按方案分配。"}</div>
+        <div class="plan-subline">预期返还 ${fmtMoney(plan.expectedReturn)}。${plan.unused ? `未分配 ${fmtMoney(plan.unused)}（不足 Kelly 阈值留作现金）。` : "预算已按方案分配。"}</div>
         ${plan.picks.map((pick) => `
           <div class="recommend-pick">
             <div class="simulation-row-head">
               <span>${playLabels[pick.play]} · ${escapeHtml(pick.label)}</span>
-              <span class="pick-units">${pick.units}倍</span>
+              <span class="pick-units">${pick.units}注</span>
             </div>
             <div class="pick-meta">
               <span>赔率 ${pick.odds.toFixed(2)}</span>
               <span>模型 ${fmtPct(pick.modelProb)}</span>
               <span>差值 ${fmtSignedPct(pick.edge)}</span>
-              <span>评分 ${pick.score.toFixed(2)}</span>
               <span>投入 ${fmtMoney(pick.units * 2)}</span>
               <span>最高返 ${fmtMoney(pick.units * 2 * pick.odds)}</span>
             </div>
-            <div class="pick-logic">
-              ${pick.selectionTags?.length ? `<span class="logic-tags">${pick.selectionTags.map((tag) => `<em>${escapeHtml(tag)}</em>`).join("")}</span>` : ""}
-              <span>${escapeHtml(pick.selectionReason || "按模型概率、赔率差值和风险规则入选。")}</span>
-            </div>
           </div>
         `).join("")}
-        <div class="muted">单项最高 50 倍；仅用于模型研究，不构成投注建议。</div>
+        <div class="muted">每场最多 50 注（100 元）；仅用于模型研究，不构成投注建议。</div>
       </div>
     </details>
   `).join("");
@@ -1543,17 +1665,36 @@ function renderDayPlanResults() {
     els.dayPlanResults.innerHTML = `<div class="empty-state">暂无全天计划方案。</div>`;
     return;
   }
-  els.dayPlanResults.innerHTML = plans.map((plan) => `
-    <details class="day-plan-card" open>
+  els.dayPlanResults.innerHTML = plans.map((plan) => {
+    const isParlay = plan.parlays != null;
+    return `
+    <details class="day-plan-card" ${isParlay ? "open" : ""}>
       <summary class="recommend-plan-summary">
         <span class="plan-title">${escapeHtml(plan.title)}</span>
-        <span class="plan-multiple">${plan.units}倍</span>
+        <span class="plan-multiple">${isParlay ? plan.parlays.length+"组" : (plan.units||0)+"倍"}</span>
         <span class="plan-money">${plan.matches} 场 / 投入 ${fmtMoney(plan.cost)} / 最高返 ${fmtMoney(plan.maxReturn)} / ${plan.maxMultiple.toFixed(1)}倍</span>
         <span class="details-action" aria-hidden="true"></span>
       </summary>
       <div class="day-pick-list">
-        <div class="plan-subline">预期返还 ${fmtMoney(plan.expectedReturn)}，生成时间 ${escapeHtml(state.dayPlan.generatedAt || "-")}。选择规则 ${escapeHtml(plan.selectionVersion || state.dayPlan.selectionVersion || PLAN_SELECTION_VERSION)}。</div>
-        ${plan.picks.map((pick) => `
+        <div class="plan-subline">预期返还 ${fmtMoney(plan.expectedReturn)}${isParlay && plan.unused > 0 ? `。未分配 ${fmtMoney(plan.unused)}（不足 Kelly 阈值留作现金）。` : ""}。生成时间 ${escapeHtml(state.dayPlan.generatedAt || "-")}。</div>
+        ${isParlay ? plan.parlays.map((p) => `
+          <div class="day-pick-row parlay-row">
+            <div class="parlay-legs">
+              ${p.legs.map(l => `<span class="parlay-leg">${escapeHtml(l.home)} vs ${escapeHtml(l.away)}：<strong>${playLabels[l.play]}·${escapeHtml(l.label)}</strong> @${l.odds.toFixed(2)}</span>`).join('<span class="parlay-x"> × </span>')}
+            </div>
+            <div class="day-pick-choice">
+              <strong>2串1</strong>
+              <span>${p.units}注</span>
+            </div>
+            <div class="pick-meta">
+              <span>组合赔率 ${p.comboOdds.toFixed(2)}</span>
+              <span>模型 ${fmtPct(p.comboProb)}</span>
+              <span>EV ${(p.ev*100).toFixed(1)}%</span>
+              <span>投入 ${fmtMoney(p.units * 2)}</span>
+              <span>最高返 ${fmtMoney(p.units * 2 * p.comboOdds)}</span>
+            </div>
+          </div>
+        `).join("") : plan.picks.map((pick) => `
           <div class="day-pick-row">
             <div class="day-pick-main">
               <strong>${escapeHtml(pick.matchNumber)} ${escapeHtml(pick.home)} vs ${escapeHtml(pick.away)}</strong>
@@ -1571,15 +1712,11 @@ function renderDayPlanResults() {
               <span>投入 ${fmtMoney(pick.units * 2)}</span>
               <span>最高返 ${fmtMoney(pick.units * 2 * pick.odds)}</span>
             </div>
-            <div class="pick-logic">
-              ${pick.selectionTags?.length ? `<span class="logic-tags">${pick.selectionTags.map((tag) => `<em>${escapeHtml(tag)}</em>`).join("")}</span>` : ""}
-              <span>${escapeHtml(pick.selectionReason || "按模型概率、赔率差值和风险规则入选。")}</span>
-            </div>
           </div>
         `).join("")}
       </div>
     </details>
-  `).join("");
+  `}).join("");
 }
 
 async function generateDayPlan() {
@@ -1627,7 +1764,13 @@ async function generateDayPlan() {
       await persistState({ immediate: true });
     }
     const modeledMatches = matches.filter((match) => modelsByMatch[match.id]);
-    const plans = ["conservative", "aggressive"].map((mode) => buildDayPlan(modeledMatches, modelsByMatch, budget, mode));
+    const plans = [];
+    for (const mode of ["conservative", "aggressive"]) {
+      const single = buildDayPlan(modeledMatches, modelsByMatch, budget, mode);
+      if (single) plans.push(single);
+      const parlay = await buildParlayPlan(modeledMatches, modelsByMatch, budget, mode);
+      if (parlay) plans.push(parlay);
+    }
     state.dayPlan = {
       date,
       budget,
@@ -2720,7 +2863,7 @@ async function researchCurrentMatch() {
 }
 
 function loadMatches(matches, payload = null) {
-  state.matches = matches;
+  state.matches = matches.filter(m => !/芬超|芬兰/i.test(m.league || ""));
   state.lastPayload = payload;
   state.selectedId = matches[0]?.id || null;
   if (state.selectedId) estimateLambdasFromMarket(selectedMatch());
@@ -3074,10 +3217,6 @@ renderAll = function() {
   if (state.activeView === "workbench") showInPlayCountdown();
 };
 els.parsePasteBtn.addEventListener("click", parsePastedJson);
-els.exportModelBtn.addEventListener("click", exportModelSnapshot);
-els.importModelBtn.addEventListener("click", importModelFromText);
-els.importModelFile.addEventListener("change", (event) => importModelFromFile(event.target.files?.[0]));
-els.modelIoCloseBtn.addEventListener("click", () => setModelIoExpanded(false));
 els.dayPlanDateSelect.addEventListener("change", () => {
   state.dayPlan.date = els.dayPlanDateSelect.value;
   persistState();
@@ -3094,6 +3233,20 @@ els.dayPlanClearBtn.addEventListener("click", clearDayPlan);
 els.simGenerateBtn.addEventListener("click", generateSimulation);
 els.simFetchResultsBtn.addEventListener("click", syncSimulationResults);
 els.simCLVBtn.addEventListener("click", captureClosingLine);
+// API Key localStorage persistence
+const tavilyKeyInput = $("#tavilyKeyInput");
+const anySportKeyInput = $("#anySportKeyInput");
+const saveKeysBtn = $("#saveKeysBtn");
+if (tavilyKeyInput) tavilyKeyInput.value = localStorage.getItem("tavily_api_key") || "";
+if (anySportKeyInput) anySportKeyInput.value = localStorage.getItem("anysport_api_key") || "";
+if (saveKeysBtn) saveKeysBtn.addEventListener("click", () => {
+  if (tavilyKeyInput) localStorage.setItem("tavily_api_key", tavilyKeyInput.value.trim());
+  if (anySportKeyInput) localStorage.setItem("anysport_api_key", anySportKeyInput.value.trim());
+  setStatus("API Key 已保存。");
+});
+
+const sportteryPopupBtn = $("#sportteryPopupBtn");
+if (sportteryPopupBtn) sportteryPopupBtn.addEventListener("click", () => { window.open("https://m.sporttery.cn/mjc/jsq/zqzjq/", "sporttery_calc", "width=420,height=700,top=60,left=60"); });
 els.simSettleBtn.addEventListener("click", settleSimulation);
 els.simClearBtn.addEventListener("click", clearSimulation);
 window.addEventListener("pagehide", sendPersistBeacon);

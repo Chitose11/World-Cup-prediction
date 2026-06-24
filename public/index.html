@@ -23,9 +23,7 @@
             <option value="crs">比分</option>
           </select>
           <button id="syncBtn" type="button" data-icon="↻">同步 sporttery</button>
-          <button id="exportModelBtn" class="secondary-btn" type="button" data-icon="⇩">导出整体模型</button>
-          <button id="importModelBtn" class="secondary-btn" type="button" data-icon="⇧">导入整体模型</button>
-          <input id="importModelFile" type="file" accept="application/json,.json" hidden />
+          <button id="sportteryPopupBtn" class="secondary-btn" type="button" data-icon="🔗">竞彩官网计算器</button>
         </div>
       </header>
 
@@ -247,6 +245,12 @@
           </section>
         </div>
       </section>
+      <div class="api-key-bar">
+        <span>API Keys</span>
+        <input id="tavilyKeyInput" type="password" placeholder="Tavily Key" />
+        <input id="anySportKeyInput" type="password" placeholder="AnySport Key" />
+        <button id="saveKeysBtn" type="button">保存</button>
+      </div>
     </main>
     <script src="./app.js"></script>
   </body>
