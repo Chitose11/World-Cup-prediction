@@ -2,7 +2,8 @@ import http from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildFullV32Model } from "./v32-engine.js";
+import { buildFullV32Model } from "./v4-engine.js";
+import { JingcaiScanner } from "./jingcai-ttg-scanner.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const root = normalize(join(__dirname, ".."));
@@ -837,7 +838,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/v32-inplay") {
     try {
       const body = req.method === "POST" ? await readJsonBody(req) : {};
-      const { buildInPlayModel } = await import("./v32-engine.js");
+      const { buildInPlayModel } = await import("./v4-engine.js");
       json(res, 200, buildInPlayModel(body));
     } catch (error) { json(res, 500, { ok: false, error: error.message }); return; }
     return;
@@ -849,6 +850,17 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, buildFullV32Model(body));
     } catch (error) {
       json(res, 500, { ok: false, error: error.message, fetchedAt: new Date().toISOString() });
+    }
+    return;
+  }
+  if (url.pathname === "/api/ttg-scan") {
+    try {
+      const body = req.method === "POST" ? await readJsonBody(req) : {};
+      const { model, match } = body;
+      const scanner = new JingcaiScanner(model || {}, match || {});
+      json(res, 200, { ok: true, ...scanner.scanAll() });
+    } catch (error) {
+      json(res, 400, { ok: false, error: error.message });
     }
     return;
   }

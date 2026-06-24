@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const STORAGE_KEY = "sporttery-v33-workbench-state";
-const APP_VERSION = "0.3.3";
+const APP_VERSION = "0.4.0";
 const PLAN_SELECTION_VERSION = "model-rules-v2";
 const DEFAULT_SIMULATION = { predictions: [], history: [] };
 const DEFAULT_DAY_PLAN = { date: "", budget: 300, plans: [], generatedAt: null, progress: "", selectionVersion: PLAN_SELECTION_VERSION };
@@ -255,9 +255,11 @@ function setModelIoExpanded(expanded) {
 function setResearchExpanded(expanded) {
   state.researchExpanded = expanded;
   document.querySelector(".research-section")?.classList.toggle("is-collapsed", !expanded);
-  els.researchToggleBtn.textContent = expanded ? "收起" : "展开";
-  els.researchToggleBtn.dataset.icon = expanded ? "▴" : "▾";
-  els.researchToggleBtn.setAttribute("aria-expanded", String(expanded));
+  if (els.researchToggleBtn) {
+    els.researchToggleBtn.textContent = expanded ? "收起" : "展开";
+    els.researchToggleBtn.dataset.icon = expanded ? "▴" : "▾";
+    els.researchToggleBtn.setAttribute("aria-expanded", String(expanded));
+  }
 }
 
 function selectedMatch() {
@@ -733,9 +735,16 @@ function updateSliderLabels() {
 
 function researchPenalty() {
   const research = selectedResearch();
+  return researchPenaltyFromResearch(research);
+}
+function researchPenaltyForMatch(match) {
+  const research = match ? (state.researchByMatch[match.id] || null) : null;
+  return researchPenaltyFromResearch(research);
+}
+function researchPenaltyFromResearch(research) {
   if (!research) return 1;
   const label = research.coverage?.label;
-  if (label === "较完整") return 0;
+  if (label === "完整" || label === "较完整") return 0;
   if (label === "可参考") return 0.5;
   return 1;
 }
@@ -874,7 +883,7 @@ function rowsForPlay(match, model, play = state.selectedPlay) {
         edge,
         ev,
         kellyFraction,
-        risk: riskLabel(play, modelProb, edge),
+        risk: riskLabel(play, modelProb, edge, match),
         singleOnly: match?.rawResult?.bettingSingle === 1,
       };
     })
@@ -1406,7 +1415,7 @@ function drawStateBeforeMatch(target, matches = state.matches) {
 
 function planNeedsResearch(match) {
   const research = state.researchByMatch[match.id];
-  return !research || research.coverage?.label !== "较完整";
+  return !research || (research.coverage?.label !== "完整" && research.coverage?.label !== "较完整");
 }
 
 async function fetchResearchForMatch(match) {
@@ -1969,37 +1978,22 @@ async function exportDayPlanForAI() {
   if (!matches.length) return;
 
   els.dayPlanExportBtn.disabled = true;
-  setStatus("正在导出 AI 分析数据...");
+  setStatus("正在导出比赛数据...");
 
   try {
-    const exportData = [];
-    for (const match of matches) {
-      const payload = state.fullModelByMatch[match.id]?.model
-        ? state.fullModelByMatch[match.id]
-        : await ensureFullModelForMatch(match);
-      const model = payload?.model;
-      if (!model) continue;
-
-      const meta = model.meta || {};
-      const signals = meta.layers?.signals || {};
-      const byPlay = model.byPlay || {};
-
-      // Format play odds with model probabilities
-      const playData = {};
+    const exportData = matches.map(match => {
+      const pools = {};
       for (const play of ["had", "hhad", "ttg", "hafu", "crs"]) {
-        const pool = match.pools?.[play] || [];
-        const probs = byPlay[play] || {};
-        playData[play] = pool.map(item => ({
-          key: item.key,
-          label: item.label || item.key,
-          odds: item.odds,
-          modelProb: probs[item.key] || 0,
-          impliedProb: item.odds ? 1 / item.odds : 0,
-          edge: (probs[item.key] || 0) - (item.odds ? 1 / item.odds : 0),
-        }));
+        const items = match.pools?.[play] || match[play] || [];
+        if (items.length) {
+          pools[play] = items.map(item => ({
+            key: item.key,
+            label: item.label || item.key,
+            odds: item.odds,
+          }));
+        }
       }
-
-      exportData.push({
+      return {
         number: match.number,
         home: match.homeShort || match.home,
         away: match.awayShort || match.away,
@@ -2007,64 +2001,22 @@ async function exportDayPlanForAI() {
         date: match.matchDate || match.businessDate,
         time: match.matchTime,
         hhadGoalLine: match.hhadGoalLine,
-        bettingSingle: match.rawResult?.bettingSingle,
-        states: model.states,
-        grade: meta.grade?.grade,
-        favoriteClass: signals.favoriteClass,
-        underdogClass: signals.underdogClass,
-        dangerZone: signals.dangerZone,
-        circuitBreaker: meta.r6CircuitBreaker?.fired,
-        midTierPair: signals.interactionMidTierPair,
-        strengthModifier: signals.interactionStrengthModifier,
-        lambdaMultipliers: signals.interactionLambdaMultipliers,
-        stage: meta.matchStage,
-        motivation: meta.motivation,
-        plays: playData,
-      });
-    }
-
-    // Build flattened valuable_picks: filter edge>0.01, sort by edge desc
-    const valuablePicks = [];
-    for (const match of exportData) {
-      for (const [play, options] of Object.entries(match.plays)) {
-        for (const opt of options) {
-          if (opt.edge > 0.01) {
-            valuablePicks.push({
-              number: match.number,
-              home: match.home,
-              away: match.away,
-              play,
-              key: opt.key,
-              label: opt.label,
-              odds: opt.odds,
-              modelProb: opt.modelProb,
-              impliedProb: opt.impliedProb,
-              edge: opt.edge,
-              dangerZone: match.dangerZone,
-              grade: match.grade,
-              favoriteClass: match.favoriteClass,
-              underdogClass: match.underdogClass,
-            });
-          }
-        }
-      }
-    }
-    valuablePicks.sort((a, b) => b.edge - a.edge);
+        pools,
+      };
+    });
 
     const blob = new Blob([JSON.stringify({
       exportedAt: new Date().toISOString(),
-      modelVersion: "World Cup V3.3 r6",
-      valuable_picks: valuablePicks,
-      totalValuable: valuablePicks.length,
+      totalMatches: exportData.length,
       matches: exportData,
     }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `world-cup-v33-r6-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `sporttery-raw-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setStatus(`已导出 ${exportData.length} 场比赛的 AI 分析数据。`);
+    setStatus(`已导出 ${exportData.length} 场比赛原始数据。`);
   } catch (error) {
     setStatus(`导出失败：${error.message}`, true);
   } finally {
@@ -2072,9 +2024,9 @@ async function exportDayPlanForAI() {
   }
 }
 
-function riskLabel(play, modelProb, edge) {
+function riskLabel(play, modelProb, edge, match) {
   if (!Number.isFinite(modelProb) || !Number.isFinite(edge)) return { label: "无模型", cls: "" };
-  const penalty = researchPenalty();
+  const penalty = match ? researchPenaltyForMatch(match) : researchPenalty();
   if (penalty >= 1 && (play === "hafu" || play === "crs")) return { label: "待情报", cls: "risk-high" };
   if (play === "crs" || play === "hafu") {
     if (edge > 0.08) return { label: "高波动", cls: "risk-high" };
@@ -3137,7 +3089,7 @@ async function researchCurrentMatch() {
     setResearchExpanded(true);
     persistState();
     setStatus(`联网情报已刷新：${payload.coverage.label}，${payload.coverage.totalResults} 条候选来源。`);
-    renderAll();
+    try { renderAll(); } catch (e) { console.error('researchCurrentMatch renderAll:', e.message); }
   } catch (error) {
     setStatus(`联网搜索失败：${error.message}`, true);
   } finally {
@@ -3501,7 +3453,9 @@ renderDayPlan = function() {
 const origRenderAll = renderAll;
 renderAll = function() {
   origRenderAll();
-  if (state.activeView === "workbench") showInPlayCountdown();
+  try {
+    if (state.activeView === "workbench") showInPlayCountdown();
+  } catch (e) { console.error('renderAll wrapper showInPlayCountdown:', e.message); }
 };
 els.parsePasteBtn.addEventListener("click", parsePastedJson);
 els.dayPlanDateSelect.addEventListener("change", () => {

@@ -1,45 +1,52 @@
-# World Cup V3.3 赔率概率工作台
+# World Cup V4.0 赔率概率工作台
 
-这是一个本地运行的世界杯赔率概率分析工作台。项目把 sporttery 官方赔率、联网情报、V3.3 r6 模型、玩法选择器和桌面端打包整合到一个可视化界面里，便于做赛前复盘、玩法筛选和模型留档。
+这是一个本地运行的世界杯赔率概率分析工作台。项目把 sporttery 官方赔率、联网情报、V4.0 模型、玩法选择器、CLV 分类账和桌面端打包整合到一个可视化界面里，便于做赛前复盘、玩法筛选、实盘记录和模型留档。
 
 > ⚠️ 数据和模型结果仅用于研究分析，不构成投注建议。量化有风险，进场需谨慎。
 
 ## 当前版本
 
-- 应用版本：`0.2.6`
-- 模型版本：`World Cup V3.3 r6` (Lambda 架构终极修订版)
-- 核心变化：彻底抛弃了早期表层胜平负的加减法修补，全面转由底层泊松 Lambda 乘数驱动。并在此基础上解决了"战术叠加导致的概率坍塌"与"长尾高赔率幻觉"两大命门。
+- 应用版本：`0.4.0`
+- 模型版本：`World Cup V4.0-a3` (xG 数据库驱动 + Copula 联合分布 + 动态校准)
+- 核心变化：彻底抛弃了早期表层胜平负的加减法修补，全面转由底层泊松 Lambda 乘数驱动，并融入 2018+2022 世界杯 xG 真实数据。
 
 ## 核心能力
 
 - 同步 sporttery 官方足球计算器赔率接口。
 - 展示胜平负、让球胜平负、比分、总进球、半全场等玩法的隐含概率、模型概率、差值和风险。
-- 联网搜索首发/预测阵容、伤停停赛、赛程动机、出线形势和盘口异动（支持 Tavily Search 回退机制）。
-- 自动把联网情报映射为模型输入，并刷新完整 V3.3 模型输出。
+- 联网搜索首发/预测阵容、伤停/停赛、赛程动机、出线形势和盘口异动（支持 Tavily Search 回退机制）。
+- 自动把联网情报映射为模型输入，并刷新完整 V4.0 模型输出。
 - **三重风控选择器**：按模型方向、赔率差值、比分矩阵、让球一致性筛选候选项；结合 `EV / (Odds - 1)` 的分母惩罚自然粉碎长尾陷阱；配置了 `2.2倍偏离度熔断` 防止 EV 幻觉。
-- 生成单场玩法方案、全日玩法计划（区分稳健/进取模式）和世界杯模拟盘。
+- **CLV 分类账 (Closed-Loop Value)**：实时记录投注、自动捕获收盘赔率、计算 CLV 指标、支持 T-10 快照回退机制。
+- **边缘监控系统**：每分钟扫描赔率异动，自动检测边缘波动并在终端告警。
+- **实时比赛模型**：支持分钟级动态泊松模型，可根据当前比分和时间动态更新概率。
+- **全日玩法计划**：区分稳健/进取模式，自动生成当日多场比赛组合方案。
 - 支持整体模型快照导入/导出，支持 Electron portable exe 独立打包。
 
-## V3.3 r6 模型概要
+## V4.0 模型概要
 
-V3.3 r6 是当前最严谨的泊松驱动版本。它的核心链路：
+V4.0 是基于真实 xG 数据的最严谨版本。它的核心链路：
 
 ```text
-P0 ensemble + Elo/FIFA baseline
-  -> Bayesian draw posterior
-  -> dynamic signals & research penalty
-  -> tactical lambda multipliers (with 0.85 floor limit)
-  -> Poisson score matrix
-  -> play-specific tuning (HT/FT, Handicap, TTG)
+xG 数据库 (2018+2022 StatsBomb/FBref)
+  → Dirichlet 伪计数收缩
+  → 球队 archetype 分类
+  → 对手互动矩阵 (6×6 archetype 矩阵)
+  → 战术 lambda 乘数
+  → 泊松分数矩阵 + Copula 联合分布
+  → 经验校准 (Brier 0.198, ECE 3.2pp)
+  → 玩法特定微调 (HT/FT, Handicap, TTG)
 ```
 
-**r6 关键跃迁与修正：**
+**V4.0 关键特性**：
 
-- **Lambda 乘数坍塌修复 (The Lambda Shift)**：将低位防守、战术克制、不稳定标签等"同质化战术惩罚"由无脑连乘改为合并计算，并设置 `0.85` 的跌停底线锁。彻底解决强队打大巴时预期进球被严重低估（如 0-0 概率异常飙升）的 Bug。外部伤停情报则保持独立运算。
-- **高赔率偏离度熔断**：在玩法选择器加入最后一道物理防线 `prob / impliedProb > 2.2`。直接斩杀模型底层在极低比分区间的天然残余偏差，根绝长尾暴利陷阱。
-- **动态局势唤醒**：激活半全场 (hafu)、让球与总进球的定制微调。泊松矩阵时间轴分布真实映射了诸如"上半场久攻不下，下半场依靠板凳深度发力"的战术剧本。
-- **底层概率倒挂兜底**：引入 `fav_win ≥ max(base_win - 8pp, 40%)` 绝对下限保护，防止极端惩罚引发冷热概率倒挂。
-- **平局先验自适应**：`p0` 从 `0.25` 调整为 `0.24`，并缩小贝叶斯先验样本量（n0=20），使模型对当届杯赛真实的沉闷/开放程度更加敏感。
+- **xG 数据库驱动**：整合 2018+2022 世界杯真实 xG 数据，30/70 权重混合，使用 Dirichlet 伪计数收缩避免小样本过拟合。
+- **对手互动矩阵**：完全重写的 6×6 archetype 矩阵，S-finisher/high-depth/unstable-low-block/athletic-resistance/tactical-resistance/mid-tier 六大类别双向互动。
+- **Lambda 乘数架构**：所有调整都作用于底层泊松参数，保证胜平负/让球/总进球/半全场的数学一致性。
+- **经验校准层**：基于 212 场历史预测的校准 bins，修正模型系统性偏差。
+- **比赛阶段分层**：小组赛/32强/16强/八强/四强/决赛分别应用不同的保守系数和 surge 系数。
+- **小组第三轮动机**：专为 2026 世界杯 48 队赛制设计的动机修正器。
+- **实时比赛模型**：支持分钟级动态更新，时间衰减 + 伤停补时尾端增强。
 
 ## 运行与部署
 
@@ -56,6 +63,7 @@ npm start
 > Windows 用户亦可直接双击 `start-workbench.cmd`
 
 ### Tavily API 配置
+
 后端仅从本机读取密钥，不会向前端暴露。任选以下一种方式：
 ```powershell
 # 方式一：环境变量注入
@@ -65,20 +73,37 @@ npm start
 或保存到秘钥文件（推荐）：
 `%USERPROFILE%\.codex\secrets\tavily_api_key.txt`
 
+### AnySport API 配置（可选）
+
+用于实时比赛数据：
+```powershell
+$env:ANYSPORT_API_KEY="your-anysport-api-key"
+```
+
 ## 桌面版打包
 
 ```powershell
 npm run dist
 ```
-产物默认输出到：`dist\World Cup V3.2 Workbench-0.2.6-portable.exe`
+产物默认输出到：`dist\World Cup V3.2 Workbench-0.4.0-portable.exe`
 > 桌面版启动时会分配随机本地端口，避免与已运行的 `4173` 冲突。
+
+## CLV 分类账使用
+
+分类账自动保存在：`%APPDATA%\sporttery-v32-workbench\clv_ledger.json`
+
+- **记录投注**：前端选择比赛和玩法后自动记录
+- **收盘赔率捕获**：Auto Monitor 在 T-5 分钟自动捕获收盘赔率
+- **T-10 快照回退**：如果未捕获到收盘赔率，使用 T-10 快照回退
+- **CLV 计算**：`CLV = (taken_odds / closing_odds - 1) * 100`
+- **正负 CLV 统计**：自动计算平均 CLV 和正 CLV 比例
 
 ## 复测与回溯验证
 
 每次修改模型后，必须执行以下基准测试：
 ```powershell
 # 语法与链路自检
-node --check src/v32-engine.js
+node --check src/v4-engine.js
 node --check public/app.js
 python -m py_compile model/world-cup-v32/scripts/world_cup_v32_helpers.py
 
@@ -90,12 +115,44 @@ node scripts/backtest-v33-selector.js
 
 ```text
 src/                         后端服务、模型引擎、Electron 入口
+  ├── v4-engine.js          V4.0 模型引擎
+  ├── server.js             HTTP 服务器 + Auto Monitor
+  ├── jingcai-ttg-scanner.js 玩法扫描器
+  ├── anysport-service.js   AnySport 实时数据服务
+  └── electron-main.js      Electron 桌面入口
 public/                      前端页面、样式和交互逻辑
 model/world-cup-v32/         Skill、模型规则文档、辅助脚本和参考数据
+  ├── references/           V3.3/V4.0 详细文档
+  └── scripts/              Python 辅助工具
 scripts/                     回测和验证脚本
 outputs/                     (自动生成) 本地输出日志，勿提交
 dist/                        (自动生成) 打包产物，勿提交
 ```
+
+## 更新日志
+
+### 0.4.0 (2026-06-24) - V4.0 大版本更新
+- **新增 V4.0 引擎**：基于 2018+2022 xG 真实数据驱动
+- **新增 CLV 分类账**：实盘记录 + 自动收盘捕获 + T-10 快照回退
+- **新增边缘监控**：每分钟扫描赔率异动，终端告警
+- **新增实时比赛模型**：分钟级动态泊松更新
+- **新增经验校准层**：212 场历史预测校准 (Brier 0.198)
+- **对手互动矩阵重写**：6×6 archetype 完整双向互动
+- **球队重新分类**：physical-resistance 拆分为 athletic/tactical 两类
+- **p0 平局先验优化**：0.27 → 0.24，n0 样本量 24 → 20
+- **Electron 依赖升级**：v37.2.5 + electron-builder v26.0.12
+- **废弃 V3.2 引擎**：完全迁移至 V4.0
+
+### 0.3.0 (2026-06-22) - V3.3 r5/r6 迭代
+- Lambda 乘数架构全面落地
+- Danger Zone 从模型层移至选择器层
+- 新增 A- 弱队对手修正器
+- 平局先验进一步优化
+
+### 0.2.6 (2026-06-18) - V3.3 r1-r4
+- 初始 V3.3 覆盖层
+- 经验校准引入
+- 小组第三轮动机模型
 
 ## 发布守则
 - 绝对禁止提交 `node_modules/`、`dist/`、`outputs/` 及任何包含本机 Key 的文件！

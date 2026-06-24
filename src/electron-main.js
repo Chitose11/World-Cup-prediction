@@ -91,9 +91,9 @@ async function startCopulaService() {
   console.error("[copula] WARNING: port 8000 not responding after 15 s");
 }
 
-// ── Kill Copula (process‑tree safe, cross‑platform) ─────────
+// ── Kill Copula (process‑tree safe, cross‑platform, idempotent) ──
 function killCopulaProcess() {
-  if (!copulaProcess) return;
+  if (!copulaProcess || !copulaProcess.pid) return;
   const pid = copulaProcess.pid;
   console.log(`[copula] killing process tree pid=${pid}`);
   try {
@@ -102,12 +102,13 @@ function killCopulaProcess() {
     } else {
       // detached:true → child is group leader → -pid kills whole tree
       try { process.kill(-pid, "SIGKILL"); } catch {}
-      // fallback: direct kill in case process group is already gone
       try { copulaProcess.kill("SIGKILL"); } catch {}
     }
   } catch (e) {
     console.log("[copula] kill note:", e.message);
   }
+  // Detach event listeners so we don't double‑fire if process exits naturally
+  copulaProcess.removeAllListeners();
   copulaProcess = null;
 }
 
@@ -162,7 +163,12 @@ async function createWindow() {
 // ── App lifecycle ───────────────────────────────────────────
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
-  await startCopulaService();  // auto‑launch Copula engine
+  try {
+    await startCopulaService();  // auto‑launch Copula engine
+  } catch (e) {
+    console.error("[copula] startup failed:", e.message);
+    killCopulaProcess();  // clean up if spawn succeeded but port never answered
+  }
   await createWindow();
 
   app.on("activate", () => {
@@ -176,7 +182,8 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// CRITICAL: prevent zombie processes on quit
+// ── Copula lifecycle — triple‑tap guaranteed cleanup ─────────
+// Level 1: normal Electron quit path (user closes window / Cmd+Q)
 app.on("before-quit", () => {
   if (httpServer?.listening) {
     httpServer.close();
@@ -184,6 +191,16 @@ app.on("before-quit", () => {
   killCopulaProcess();
 });
 
+// Level 2: Electron final exit — catches edge cases
 app.on("will-quit", () => {
-  killCopulaProcess();  // double‑tap for safety
+  killCopulaProcess();
+});
+
+// Level 3: Node‑level safety net — fires on clean process exit
+// (does NOT fire on kill -9 or process.exit(), but protects all normal paths)
+process.on("exit", (code) => {
+  if (copulaProcess) {
+    console.log(`[copula] process.exit(${code}) — force clean`);
+    killCopulaProcess();
+  }
 });
