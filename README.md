@@ -6,9 +6,9 @@
 
 ## 当前版本
 
-- 应用版本：`0.4.0`
-- 模型版本：`World Cup V4.0-a3` (xG 数据库驱动 + Copula 联合分布 + 动态校准)
-- 核心变化：彻底抛弃了早期表层胜平负的加减法修补，全面转由底层泊松 Lambda 乘数驱动，并融入 2018+2022 世界杯 xG 真实数据。
+- 应用版本：`0.5.0`
+- 模型版本：`World Cup V4.0-a4` (xG 数据库驱动 + Copula 联合分布 + 251 俱乐部支持)
+- 核心变化：彻底抛弃了早期表层胜平负的加减法修补，全面转由底层泊松 Lambda 乘数驱动，并融入 2018+2022 世界杯 xG 真实数据；新增俱乐部球队支持、Copula 联合分布计算、历史数据迁移与 SQLite 存储。
 
 ## 核心能力
 
@@ -20,6 +20,9 @@
 - **CLV 分类账 (Closed-Loop Value)**：实时记录投注、自动捕获收盘赔率、计算 CLV 指标、支持 T-10 快照回退机制。
 - **边缘监控系统**：每分钟扫描赔率异动，自动检测边缘波动并在终端告警。
 - **实时比赛模型**：支持分钟级动态泊松模型，可根据当前比分和时间动态更新概率。
+- **Copula 联合分布**：支持主队/客队进球的联合概率分布建模，更准确地刻画相关性。
+- **全链路回测工具集**：提供多种回测场景支持，包括世界杯、俱乐部赛事等。
+- **历史数据 SQLite 存储**：支持赔率数据的持久化存储和历史分析。
 - **全日玩法计划**：区分稳健/进取模式，自动生成当日多场比赛组合方案。
 - 支持整体模型快照导入/导出，支持 Electron portable exe 独立打包。
 
@@ -41,8 +44,10 @@ xG 数据库 (2018+2022 StatsBomb/FBref)
 **V4.0 关键特性**：
 
 - **xG 数据库驱动**：整合 2018+2022 世界杯真实 xG 数据，30/70 权重混合，使用 Dirichlet 伪计数收缩避免小样本过拟合。
+- **251+ 俱乐部球队支持**：集成 clubelo.com 数据，支持主流联赛俱乐部球队分析。
 - **对手互动矩阵**：完全重写的 6×6 archetype 矩阵，S-finisher/high-depth/unstable-low-block/athletic-resistance/tactical-resistance/mid-tier 六大类别双向互动。
 - **Lambda 乘数架构**：所有调整都作用于底层泊松参数，保证胜平负/让球/总进球/半全场的数学一致性。
+- **Copula 联合分布**：建模主客队进球的相关性，提供更准确的联合概率估计。
 - **经验校准层**：基于 212 场历史预测的校准 bins，修正模型系统性偏差。
 - **比赛阶段分层**：小组赛/32强/16强/八强/四强/决赛分别应用不同的保守系数和 surge 系数。
 - **小组第三轮动机**：专为 2026 世界杯 48 队赛制设计的动机修正器。
@@ -85,7 +90,7 @@ $env:ANYSPORT_API_KEY="your-anysport-api-key"
 ```powershell
 npm run dist
 ```
-产物默认输出到：`dist\World Cup V3.2 Workbench-0.4.0-portable.exe`
+产物默认输出到：`dist\World Cup V3.2 Workbench-0.5.0-portable.exe`
 > 桌面版启动时会分配随机本地端口，避免与已运行的 `4173` 冲突。
 
 ## CLV 分类账使用
@@ -97,6 +102,59 @@ npm run dist
 - **T-10 快照回退**：如果未捕获到收盘赔率，使用 T-10 快照回退
 - **CLV 计算**：`CLV = (taken_odds / closing_odds - 1) * 100`
 - **正负 CLV 统计**：自动计算平均 CLV 和正 CLV 比例
+
+## 历史数据与回测
+
+### SQLite 历史数据库
+
+项目支持将赔率数据存储到 SQLite 数据库进行持久化分析：
+
+```powershell
+# 迁移历史数据到 SQLite
+node scripts/migrate_to_sqlite.js
+
+# 恢复历史数据
+node scripts/recover_history.js
+
+# 从 500.com 拉取历史让球赔率
+python scripts/fetch_hhad_500.py
+```
+
+数据库文件位置：`sporttery_history.db`
+
+### 回测工具集
+
+项目提供了完整的回测工具链：
+
+```powershell
+# 基础选择器回测
+node scripts/backtest-selector.js
+
+# V2 选择器回测
+node scripts/backtest-v2.js
+
+# V4 完整回测
+node scripts/backtest-v4.js
+
+# 世界杯专项回测
+node scripts/backtest-wc.js
+
+# 结果分析
+node scripts/backtest-results.js
+
+# 最终回测
+node scripts/backtest-final.js
+
+# 一键拉取 + 回测
+node scripts/fetch-and-backtest.js
+```
+
+### Club ELO 数据
+
+构建俱乐部 ELO 评级：
+```powershell
+python scripts/build_club_elo.py
+```
 
 ## 复测与回溯验证
 
@@ -115,21 +173,43 @@ node scripts/backtest-v33-selector.js
 
 ```text
 src/                         后端服务、模型引擎、Electron 入口
-  ├── v4-engine.js          V4.0 模型引擎
-  ├── server.js             HTTP 服务器 + Auto Monitor
+  ├── v4-engine.js          V4.0 模型引擎（含 251+ 俱乐部支持、Copula）
+  ├── server.js             HTTP 服务器 + Auto Monitor + 采集状态 API
   ├── jingcai-ttg-scanner.js 玩法扫描器
   ├── anysport-service.js   AnySport 实时数据服务
   └── electron-main.js      Electron 桌面入口
-public/                      前端页面、样式和交互逻辑
+public/                      前端页面、样式和交互逻辑（卡片式布局）
 model/world-cup-v32/         Skill、模型规则文档、辅助脚本和参考数据
   ├── references/           V3.3/V4.0 详细文档
   └── scripts/              Python 辅助工具
 scripts/                     回测和验证脚本
+  ├── backtest-selector.js  选择器回测
+  ├── backtest-v2.js        V2 回测
+  ├── backtest-v4.js        V4 完整回测
+  ├── backtest-wc.js        世界杯专项回测
+  ├── backtest-results.js   结果分析
+  ├── backtest-final.js     最终回测
+  ├── fetch-and-backtest.js 一键拉取回测
+  ├── migrate_to_sqlite.js  历史数据迁移到 SQLite
+  ├── recover_history.js    历史数据恢复
+  ├── fetch_hhad_500.py     500.com 历史让球赔率
+  ├── build_club_elo.py     俱乐部 ELO 构建
+  └── selector-v2.js        V2 选择器
 outputs/                     (自动生成) 本地输出日志，勿提交
 dist/                        (自动生成) 打包产物，勿提交
 ```
 
 ## 更新日志
+
+### 0.5.0 (2026-06-25) - V4.0 正式版发布
+- **版本升级**：0.4.0 → 0.5.0
+- **新增 Copula 联合分布**：支持主客队进球相关性建模
+- **新增 251+ 俱乐部球队支持**：集成 clubelo.com 数据
+- **前端重构**：卡片式扫描布局替代原表格布局，新增采集器状态栏
+- **全链路回测工具集**：提供多种回测场景支持
+- **历史数据 SQLite 存储**：支持数据持久化与历史分析
+- **后端 API 扩展**：采集状态接口、竞彩官网计算器代理、自动缓存
+- **新增 500.com 历史让球赔率**：Python 脚本拉取历史数据
 
 ### 0.4.0 (2026-06-24) - V4.0 大版本更新
 - **新增 V4.0 引擎**：基于 2018+2022 xG 真实数据驱动

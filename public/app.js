@@ -73,9 +73,6 @@ const els = {
   researchBtn: $("#researchBtn"),
   researchToggleBtn: $("#researchToggleBtn"),
   researchBox: $("#researchBox"),
-  budgetInput: $("#budgetInput"),
-  recommendBtn: $("#recommendBtn"),
-  recommendBox: $("#recommendBox"),
   pasteJson: $("#pasteJson"),
   parsePasteBtn: $("#parsePasteBtn"),
   dayPlanDateSelect: $("#dayPlanDateSelect"),
@@ -1107,10 +1104,10 @@ function attachDayPickMeta(match, pick, extra = {}) {
 
 function dayPlanOptionsForMatch(match, model, mode) {
   if (!model?.byPlay) return [];
-  // Bug-fix: reject matches where both teams lack real data (default Elo=1700, unknown archetype)
+  // Bug-fix: reject match if EITHER team lacks real data — single unknown pollutes joint distribution
   const homeArch = model.meta?.home?.archetype;
   const awayArch = model.meta?.away?.archetype;
-  if (homeArch === "unknown" && awayArch === "unknown") return [];
+  if (homeArch === "unknown" || awayArch === "unknown") return [];
   const plays = mode === "aggressive" ? ["had", "hhad", "ttg", "hafu", "crs"] : ["had", "hhad", "ttg"];
   // Phase 3: hard EV filter — no negative-EV pick enters the day plan pool
   return rankedModelCandidates(match, model, mode, { plays })
@@ -1220,11 +1217,10 @@ function allocateUnits(totalUnits, picks, mode) {
   // Sort by EV/Kelly BEFORE allocation — highest value picks get money first
   const sorted = [...picks].sort((a, b) => (b.kellyFraction || b.score || 0) - (a.kellyFraction || a.score || 0));
 
-  // Build allocation weights
+  // Build allocation weights — based on kellyFraction directly, NO confidence-tier fallback
   const weights = sorted.map((pick) => {
-    if (totalKelly > 0) return Math.max(0, Number(pick.kellyFraction) || 0) / totalKelly;
-    const tier = { A: 5, B: 3, C: 2, D: 1 }[pick.confidence] || 1;
-    return mode === "aggressive" ? Math.sqrt(tier) : tier * tier;
+    const raw = Number(pick.kellyFraction) || (pick.score ? pick.score / 100 : 0) || 0.001;
+    return Math.max(0.001, raw);
   });
   const totalWeight = weights.reduce((s, w) => s + w, 0) || picks.length;
 
@@ -1242,53 +1238,25 @@ function allocateUnits(totalUnits, picks, mode) {
   while (remaining > 0 && guard < 2000) {
     const target = allocated
       .filter(p => p.units < HARD_CAP)
-      .sort((a, b) => ((b.kellyFraction || b.score || (weights[allocated.indexOf(b)] || 1)) / Math.sqrt(b.units + 1))
-                     - ((a.kellyFraction || a.score || (weights[allocated.indexOf(a)] || 1)) / Math.sqrt(a.units + 1)))[0];
+      .sort((a, b) => ((b.kellyFraction || b.score/100 || 0.001) / Math.sqrt(b.units + 1))
+                     - ((a.kellyFraction || a.score/100 || 0.001) / Math.sqrt(a.units + 1)))[0];
     if (!target) break; // all at HARD_CAP — rare, only with tiny pick count + huge budget
     target.units += 1;
     remaining -= 1;
     guard += 1;
   }
-  // Last resort: if ALL at cap, boost highest-weight picks beyond cap (only for extreme budgets)
+  // Last resort: if ALL at cap, boost highest-Kelly picks beyond cap
   guard = 0;
   while (remaining > 0 && guard < 2000) {
     const target = allocated.sort((a, b) =>
-      ((b.kellyFraction || b.score || (weights[allocated.indexOf(b)] || 1)) / Math.sqrt(b.units + 1))
-    - ((a.kellyFraction || a.score || (weights[allocated.indexOf(a)] || 1)) / Math.sqrt(a.units + 1)))[0];
+      ((b.kellyFraction || b.score/100 || 0.001) / Math.sqrt(b.units + 1))
+    - ((a.kellyFraction || a.score/100 || 0.001) / Math.sqrt(a.units + 1)))[0];
     target.units += 1;
     remaining -= 1;
     guard += 1;
   }
 
   return allocated.filter(p => p.units > 0);
-}
-
-function buildRecommendationPlans(match, model, amount) {
-  const totalUnits = Math.max(1, Math.floor((Number(amount) || 0) / 2));
-  const playOrder = ["had", "hhad", "ttg", "hafu", "crs"];
-  const plans = ["conservative", "aggressive"].map((mode) => {
-    const picks = playOrder
-      .map((play) => bestPickForPlay(match, model, play, mode))
-      .filter(Boolean);
-    const allocated = allocateUnits(totalUnits, picks, mode);
-    const cost = allocated.reduce((sum, pick) => sum + pick.units * 2, 0);
-    const maxReturn = allocated.reduce((sum, pick) => sum + pick.units * 2 * pick.odds, 0);
-    const expectedReturn = allocated.reduce((sum, pick) => sum + pick.units * 2 * pick.odds * pick.modelProb, 0);
-    const units = allocated.reduce((sum, pick) => sum + pick.units, 0);
-    return {
-      mode,
-      title: mode === "conservative" ? "保守方案" : "激进方案",
-      picks: allocated,
-      units,
-      cost,
-      maxReturn,
-      expectedReturn,
-      maxMultiple: cost ? maxReturn / cost : 0,
-      unused: Math.max(0, totalUnits * 2 - cost),
-      selectionVersion: PLAN_SELECTION_VERSION,
-    };
-  });
-  return plans;
 }
 
 function matchPlanDate(match) {
@@ -1691,47 +1659,6 @@ function buildDayPlan(matches, modelsByMatch, budget, mode) {
     selectionVersion: PLAN_SELECTION_VERSION,
     picks: baseUnits,
   };
-}
-
-function renderRecommendations(match, model) {
-  if (!els.recommendBox) return;
-  if (!match || !model) {
-    els.recommendBox.textContent = "选择比赛后生成预算方案。";
-    return;
-  }
-  const amount = Number(els.budgetInput.value) || 0;
-  const normalizedAmount = Math.max(2, Math.floor(amount / 2) * 2);
-  if (normalizedAmount !== amount) els.budgetInput.value = normalizedAmount;
-  const plans = buildRecommendationPlans(match, model, normalizedAmount);
-  els.recommendBox.innerHTML = plans.map((plan) => `
-    <details class="recommend-plan">
-      <summary class="recommend-plan-summary">
-        <span class="plan-title">${plan.title}</span>
-        <span class="plan-multiple">${plan.units}注</span>
-        <span class="plan-money">投入 ${fmtMoney(plan.cost)} / 最高返 ${fmtMoney(plan.maxReturn)} / ${plan.maxMultiple.toFixed(1)}倍</span>
-        <span class="details-action" aria-hidden="true"></span>
-      </summary>
-      <div class="recommend-plan-body">
-        <div class="plan-subline">预期返还 ${fmtMoney(plan.expectedReturn)}。${plan.unused ? `未分配 ${fmtMoney(plan.unused)}（不足 Kelly 阈值留作现金）。` : "预算已按方案分配。"}</div>
-        ${plan.picks.map((pick) => `
-          <div class="recommend-pick">
-            <div class="simulation-row-head">
-              <span>${playLabels[pick.play]} · ${escapeHtml(pick.label)}</span>
-              <span class="pick-units">${pick.units}注</span>
-            </div>
-            <div class="pick-meta">
-              <span>赔率 ${pick.odds.toFixed(2)}</span>
-              <span>模型 ${fmtPct(pick.modelProb)}</span>
-              <span>差值 ${fmtSignedPct(pick.edge)}</span>
-              <span>投入 ${fmtMoney(pick.units * 2)}</span>
-              <span>最高返 ${fmtMoney(pick.units * 2 * pick.odds)}</span>
-            </div>
-          </div>
-        `).join("")}
-        <div class="muted">每场最多 50 注（100 元）；仅用于模型研究，不构成投注建议。</div>
-      </div>
-    </details>
-  `).join("");
 }
 
 function renderDayPlan() {
@@ -3094,13 +3021,11 @@ function renderAll() {
     safe('renderSummary', () => renderSummary(match, model));
     safe('renderTable', () => renderTable(match, model));
     safe('renderDecision', () => renderDecision(match, model));
-    safe('renderRecommendations', () => renderRecommendations(match, model));
   } else {
     safe('renderAll-default', () => {
       if (els.summaryStrip) els.summaryStrip.innerHTML = "";
       if (els.scannerCards) els.scannerCards.innerHTML = `<div class="empty-state">请选择比赛。</div>`;
     });
-    safe('renderRecommendations', () => renderRecommendations(null, null));
   }
   safe('renderSimulation', renderSimulation);
 }
@@ -3271,8 +3196,7 @@ function getBestModelForMatch(match) {
   if (cached?.model) return cached.model;
   return modelProbabilities(match);
 }
-els.budgetInput.addEventListener("input", () => renderRecommendations(selectedMatch(), getBestModelForMatch(selectedMatch())));
-els.recommendBtn.addEventListener("click", () => renderRecommendations(selectedMatch(), getBestModelForMatch(selectedMatch())));
+// Recommend section removed in V4.0 — scanner cards replace manual play plans
 
 // 实时赛况面板 — always visible, countdown before KO, live polling after KO
 let inPlayActive = false;
