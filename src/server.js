@@ -12,6 +12,68 @@ let port = Number(process.env.PORT || 4173);
 let tavilyApiKey = process.env.TAVILY_API_KEY || "";
 let stateFile = process.env.WORKBENCH_STATE_FILE || defaultStateFile();
 
+// ── Collector status tracker ─────────────────────────────────
+const collectorStatus = {
+  lastSyncAt: null,
+  lastSyncNewRecords: 0,
+  totalRecords: 0,
+  apiHealth: "idle",       // idle | 200 | 403 | 502
+  lastError: null,
+  historyDir: join(root, "..", "omega-copula-engine", "history"),
+};
+
+async function updateCollectorDB(data) {
+  const matches = data?.matches || [];
+  if (!matches.length) return;
+
+  // Always update status + write JSON (non-negotiable)
+  collectorStatus.lastSyncAt = new Date().toISOString();
+  collectorStatus.lastSyncNewRecords = matches.length;
+  collectorStatus.totalRecords += matches.length;
+  collectorStatus.apiHealth = "200";
+  collectorStatus.lastError = null;
+
+  // Write JSON (fire-and-forget for speed)
+  try {
+    await mkdir(collectorStatus.historyDir, { recursive: true });
+    const today = new Date().toISOString().slice(0, 10);
+    await writeFile(join(collectorStatus.historyDir, `sporttery-${today}.json`), JSON.stringify(data, null, 2));
+  } catch (e) { collectorStatus.lastError = "JSON write: " + e.message; }
+
+  // Write to SQLite (best-effort, don't block status update)
+  try {
+    const { default: Database } = await import("better-sqlite3");
+    const dbPath = join(root, "..", "omega-copula-engine", "sporttery_history.db");
+    const db = new Database(dbPath);
+    db.pragma("journal_mode = WAL");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, captured_at TEXT DEFAULT (datetime('now')), match_date TEXT);
+      CREATE TABLE IF NOT EXISTS matches (id INTEGER PRIMARY KEY, snapshot_id INTEGER, match_id INTEGER, match_num TEXT, league TEXT, home TEXT, away TEXT, home_short TEXT, away_short TEXT, match_date TEXT, match_time TEXT, hhad_goal_line REAL, UNIQUE(snapshot_id, match_id));
+      CREATE TABLE IF NOT EXISTS odds (id INTEGER PRIMARY KEY AUTOINCREMENT, match_row_id INTEGER, pool TEXT, outcome_key TEXT, outcome_label TEXT, odds REAL, UNIQUE(match_row_id, pool, outcome_key));
+    `);
+    const insSnapshot = db.prepare("INSERT INTO snapshots (match_date) VALUES (?)");
+    const insMatch = db.prepare("INSERT OR IGNORE INTO matches (snapshot_id, match_id, match_num, league, home, away, home_short, away_short, match_date, match_time, hhad_goal_line) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+    const insOdds = db.prepare("INSERT OR IGNORE INTO odds (match_row_id, pool, outcome_key, outcome_label, odds) VALUES (?,?,?,?,?)");
+    const snap = insSnapshot.run(new Date().toISOString().slice(0,10));
+    const sid = snap.lastInsertRowid;
+    for (const m of matches) {
+      const pools = m.pools || m;
+      const r = insMatch.run(sid, m.id, m.number, m.league, m.homeShort||m.home, m.awayShort||m.away, m.homeShort, m.awayShort, m.matchDate||m.businessDate, m.matchTime, m.hhadGoalLine||0);
+      const rid = r.lastInsertRowid;
+      if (!rid) continue;
+      for (const poolName of ["had","hhad","ttg","hafu","crs"]) {
+        const items = pools[poolName] || [];
+        for (const item of items) {
+          if (item.odds) insOdds.run(rid, poolName, item.key, item.label||item.key, item.odds);
+        }
+      }
+    }
+    db.close();
+  } catch (e) {
+    collectorStatus.lastError = "SQLite: " + e.message;
+  }
+}
+
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -759,10 +821,23 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${port}`);
   if (url.pathname === "/api/sporttery") {
     try {
-      json(res, 200, await fetchSporttery(url.searchParams.get("pool")));
+      const data = await fetchSporttery(url.searchParams.get("pool"));
+      json(res, 200, data);
+      // Auto-archive — unfiltered, all matches including unknown teams
+      updateCollectorDB(data).catch(e => {
+        collectorStatus.lastError = e.message;
+        console.error("[collector] DB write failed:", e.message);
+      });
     } catch (error) {
+      collectorStatus.apiHealth = "502";
+      collectorStatus.lastError = error.message;
       json(res, 502, { ok: false, error: error.message, fetchedAt: new Date().toISOString() });
     }
+    return;
+  }
+
+  if (url.pathname === "/api/collector-status") {
+    json(res, 200, collectorStatus);
     return;
   }
   if (url.pathname === "/api/results") {
@@ -853,6 +928,27 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  if (url.pathname === "/api/sporttery-calc") {
+    try {
+      const matchId = url.searchParams.get("matchId") || "";
+      const calcUrl = new URL("https://webapi.sporttery.cn/gateway/uniform/football/getMatchCalculatorV1.qry");
+      calcUrl.searchParams.set("matchId", matchId);
+      const resp = await fetch(calcUrl, {
+        headers: {
+          accept: "application/json",
+          origin: "https://www.sporttery.cn",
+          referer: "https://www.sporttery.cn/jc/zqsgkj/",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        },
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      json(res, 200, { ok: true, value: data?.value || data });
+    } catch (error) {
+      json(res, 502, { ok: false, error: error.message });
+    }
+    return;
+  }
   if (url.pathname === "/api/ttg-scan") {
     try {
       const body = req.method === "POST" ? await readJsonBody(req) : {};
@@ -889,6 +985,21 @@ export function startServer(options = {}) {
   publicDir = options.publicDir ? normalize(options.publicDir) : publicDir;
   tavilyApiKey = options.tavilyApiKey ?? tavilyApiKey;
   stateFile = options.stateFile ? normalize(options.stateFile) : stateFile;
+
+  // Restore totalRecords from history directory
+  import("node:fs").then(({ readdirSync, existsSync, readFileSync }) => {
+    try {
+      if (existsSync(collectorStatus.historyDir)) {
+        const files = readdirSync(collectorStatus.historyDir).filter(f => f.endsWith(".json"));
+        for (const f of files) {
+          try {
+            const raw = JSON.parse(readFileSync(join(collectorStatus.historyDir, f), "utf-8"));
+            collectorStatus.totalRecords += (raw.matches?.length || 0);
+          } catch {}
+        }
+      }
+    } catch {}
+  }).catch(() => {});
 
   return new Promise((resolve, reject) => {
     const onError = (error) => {

@@ -22,7 +22,7 @@
             <option value="ttg">总进球</option>
             <option value="crs">比分</option>
           </select>
-          <button id="syncBtn" type="button" data-icon="↻">同步 sporttery</button>
+          <button id="syncBtn" type="button" data-icon="↻" class="anim-scale-press">同步 sporttery</button>
           <button id="sportteryPopupBtn" class="secondary-btn" type="button" data-icon="🔗">竞彩官网计算器</button>
         </div>
       </header>
@@ -105,13 +105,6 @@
           </div>
 
           <div class="play-toolbar">
-            <nav class="play-tabs" id="playTabs">
-              <button class="active" data-play="hafu" data-icon="◐">半全场</button>
-              <button data-play="had" data-icon="1">胜平负</button>
-              <button data-play="hhad" data-icon="±">让球</button>
-              <button data-play="crs" data-icon="#">比分</button>
-              <button data-play="ttg" data-icon="Σ">总进球</button>
-            </nav>
             <section class="recommend-section recommend-section-inline">
               <div class="section-head">
                 <h2>玩法方案</h2>
@@ -128,26 +121,12 @@
           </div>
 
           <div class="summary-strip" id="summaryStrip"></div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>玩法</th>
-                  <th>赔率</th>
-                  <th>隐含概率</th>
-                  <th>V3.3 概率</th>
-                  <th>差值</th>
-                  <th>风险</th>
-                </tr>
-              </thead>
-              <tbody id="oddsTable"></tbody>
-            </table>
-          </div>
+          <div class="scanner-cards-wrap" id="scannerCards"></div>
         </section>
 
         <aside class="decision-pane">
           <section class="decision-section">
-            <h2>V3.3 结论</h2>
+            <h2>V4.0 扫描报告</h2>
             <div id="decisionBox" class="decision-box">
               等待选择比赛。
             </div>
@@ -189,7 +168,7 @@
               总预算
               <input id="dayPlanBudgetInput" type="number" min="2" step="2" value="300" />
             </label>
-            <button id="dayPlanGenerateBtn" type="button" data-icon="⌕">补全情报并生成</button>
+            <button id="dayPlanGenerateBtn" type="button" data-icon="⌕" class="anim-scale-press">补全情报并生成</button>
             <button id="dayPlanExportBtn" type="button" data-icon="↓">导出AI分析数据</button>
             <button id="dayPlanClearBtn" type="button" data-icon="×">清空全天计划</button>
           </div>
@@ -223,9 +202,10 @@
           </div>
           <div class="sim-actions">
             <label>
-              每场定投
-              <input id="simStakeInput" type="number" min="2" step="2" value="1000" />
+              初始预算
+              <input id="simBankrollInput" type="number" min="100" step="100" value="10000" style="width:90px" />
             </label>
+            <span id="simBalanceDisplay" class="sim-balance" style="display:none">余额: -</span>
             <button id="simGenerateBtn" type="button" data-icon="+">生成未来预测</button>
             <button id="simFetchResultsBtn" type="button" data-icon="↻">同步赛果</button>
             <button id="simCLVBtn" type="button" data-icon="⏱">捕获闭盘线</button>
@@ -261,6 +241,13 @@
         <div class="copula-progress-text" id="copulaProgressText">0%</div>
         <button class="copula-cancel-btn" id="copulaCancelBtn" type="button" hidden>取消</button>
       </div>
+    </div>
+
+    <!-- ── Collector Dashboard ────────────────────────────── -->
+    <div class="collector-bar" id="collectorBar">
+      <span class="collector-dot" id="collectorDot"></span>
+      <span id="collectorText">采集器初始化中...</span>
+      <span class="collector-meta" id="collectorMeta"></span>
     </div>
 
     <script src="./app.js"></script>

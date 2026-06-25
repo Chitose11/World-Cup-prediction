@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const STORAGE_KEY = "sporttery-v33-workbench-state";
-const APP_VERSION = "0.4.0";
+const APP_VERSION = "0.5.0";
 const PLAN_SELECTION_VERSION = "model-rules-v2";
 const DEFAULT_SIMULATION = { predictions: [], history: [] };
 const DEFAULT_DAY_PLAN = { date: "", budget: 300, plans: [], generatedAt: null, progress: "", selectionVersion: PLAN_SELECTION_VERSION };
@@ -11,7 +11,7 @@ const savedState = loadSavedState();
 const state = {
   matches: savedState.matches || [],
   selectedId: savedState.selectedId || null,
-  selectedPlay: "hafu",
+  selectedPlay: "had",
   lastPayload: savedState.lastPayload || null,
   activeView: routeViewFromHash() || savedState.activeView || "workbench",
   researchExpanded: false,
@@ -66,9 +66,9 @@ const els = {
   inPlayHomeGoals: $("#inPlayHomeGoals"),
   inPlayAwayGoals: $("#inPlayAwayGoals"),
   inPlayResult: $("#inPlayResult"),
-  playTabs: $("#playTabs"),
   summaryStrip: $("#summaryStrip"),
-  oddsTable: $("#oddsTable"),
+  scannerCards: $("#scannerCards"),
+  oddsTable: $("#scannerCards"),  // legacy alias → V4 scanner container
   decisionBox: $("#decisionBox"),
   researchBtn: $("#researchBtn"),
   researchToggleBtn: $("#researchToggleBtn"),
@@ -87,6 +87,8 @@ const els = {
   dayPlanSummary: $("#dayPlanSummary"),
   dayPlanResults: $("#dayPlanResults"),
   simStakeInput: $("#simStakeInput"),
+  simBankrollInput: $("#simBankrollInput"),
+  simBalanceDisplay: $("#simBalanceDisplay"),
   simGenerateBtn: $("#simGenerateBtn"),
   simFetchResultsBtn: $("#simFetchResultsBtn"),
   simCLVBtn: $("#simCLVBtn"),
@@ -774,6 +776,7 @@ function renderMatches() {
   $$(".match-card").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedId = button.dataset.matchId;
+      _scannerCache.delete(button.dataset.matchId);  // stale cache for new selection
       const match = selectedMatch();
       estimateLambdasFromMarket(match);
       applyAutoSettings(state.autoByMatch[match?.id]);
@@ -998,156 +1001,63 @@ function pushUnique(list, value) {
 
 function scorePlanCandidate(row, context, mode, options = {}) {
   const prob = Number(row.modelProb);
-  const edgeRaw = Number(row.edge);
-  const edge = Number.isFinite(edgeRaw) ? edgeRaw : 0;
   const odds = Number(row.odds);
   const tags = [];
-  const reasons = [];
-  const playReliabilityScore = playReliability(row.play, mode);
-  const oddsTail = Math.min(Math.max(odds || 1, 1), mode === "aggressive" ? 80 : 20) / (mode === "aggressive" ? 80 : 20);
-  const minEdge = mode === "aggressive" ? -0.01 : 0.006;
-  const minProb = minCandidateProb(row, mode);
-  const ev = Number.isFinite(row.ev) ? row.ev : (prob * odds) - 1;
-  const fullKelly = odds > 1 ? Math.max(0, ev / (odds - 1)) : 0;
-  const kellyScale = mode === "aggressive" ? 0.60 : 0.25;
-  const baseKelly = fullKelly * kellyScale;
+  const SEL = { MIN_EV: 0.025, MAX_ODDS: 8, DIV_CAP: 1.5, KELLY_MULT: 0.25, MIN_KELLY: 0.002 };
 
-  if (!Number.isFinite(prob) || !Number.isFinite(odds)) return { ...row, rejected: true, rejectReason: "missing probability or odds" };
-  if (!Number.isFinite(ev) || ev <= 0) return { ...row, rejected: true, rejectReason: "EV<=0" };
-  if (context.dangerZone && row.play === "had") return { ...row, rejected: true, rejectReason: "Danger Zone: no HAD single pick" };
-  if (mode === "conservative" && row.play === "crs") return { ...row, rejected: true, rejectReason: "保守方案不选比分高波动项" };
-  if (prob < minProb && ev < 0.06) return { ...row, rejected: true, rejectReason: `模型概率低于${fmtPct(minProb)}` };
-  // Kelly-based low-probability guard — replaces hardcoded ttg:s0/s1/s6/s7 filter
-  if (mode === "conservative" && prob < 0.25) return { ...row, rejected: true, rejectReason: "保守模式剔除低概率(高方差)尾部事件" };
-  if (row.play === "had" && row.key !== context.favoriteSide && row.key !== "d" && mode === "conservative") {
-    return { ...row, rejected: true, rejectReason: "保守方案不选胜平负冷门胜" };
-  }
-  if (row.play === "had" && row.key !== context.favoriteSide && row.key !== "d" && (prob < 0.30 || ev < 0.18)) {
-    return { ...row, rejected: true, rejectReason: "冷门胜EV/概率不足" };
+  // 1. Hard pass
+  if (!Number.isFinite(prob) || !Number.isFinite(odds)) {
+    return { ...row, rejected: true, rejectReason: "缺失概率或赔率" };
   }
 
-  if (row.play === "had" && context.marketDisagreement && row.key === context.favoriteSide && row.key !== "d") {
-    if (mode === "conservative" && odds >= 3.2) return { ...row, rejected: true, rejectReason: "market disagreement high-odds win" };
-    if (mode === "aggressive" && (odds >= 7 || (prob < 0.38 && ev < 0.35))) return { ...row, rejected: true, rejectReason: "market disagreement tail too thin" };
+  // 2. Layer 1A: High-variance tail circuit break
+  if (odds > SEL.MAX_ODDS) {
+    return { ...row, rejected: true, rejectReason: `赔率${odds.toFixed(1)}>${SEL.MAX_ODDS}x，尾端方差熔断` };
   }
 
-  let v2RiskMultiplier = 1;
-  if (context.gradeText.includes("D")) v2RiskMultiplier *= 0.35;
-  else if (context.gradeText.includes("C")) v2RiskMultiplier *= 0.62;
-  else if (context.gradeText.includes("B")) v2RiskMultiplier *= 0.84;
-  if (context.marketDisagreement) v2RiskMultiplier *= mode === "aggressive" ? 0.85 : 0.70;
-  if (row.play === "crs") v2RiskMultiplier *= mode === "aggressive" ? 0.45 : 0.20;
-  if (row.play === "hafu") v2RiskMultiplier *= mode === "aggressive" ? 0.68 : 0.48;
-  if (row.play === "ttg") v2RiskMultiplier *= mode === "aggressive" ? 0.78 : 0.62;
-  if (row.play === "hhad" && row.key === context.favoriteSide && (context.deepHandicap || context.lowBlockPenalty || context.drawPressure)) v2RiskMultiplier *= 0.45;
-  if (row.play === "had" && row.key === context.favoriteSide && context.drawPressure && context.favoriteProb < 0.58) v2RiskMultiplier *= 0.72;
-  if (row.play === "had" && row.key === "d" && !context.lowBlockPenalty && context.drawProb < 0.34) v2RiskMultiplier *= 0.72;
-  // r6: dangerZone — directional, aggressive mode is less punishing
-  if (context.dangerZone && row.play === "hhad" && row.key === context.favoriteSide) v2RiskMultiplier *= mode === "aggressive" ? 0.55 : 0.30;
-  else if (context.dangerZone && row.play === "hhad" && row.key === context.underdogSide) v2RiskMultiplier *= 1.10;
-  else if (context.dangerZone && row.play === "ttg") {
-    const ttn = Number(String(row.key).replace("s", ""));
-    v2RiskMultiplier *= (ttn <= 2) ? 1.0 : (mode === "aggressive" ? 0.70 : 0.50);
+  // 3. Layer 0: Vig deduction — true implied prob
+  const trueImplied = row.trueImplied || (1 / odds);
+  const ev = (prob * odds) - 1;
+  if (ev <= SEL.MIN_EV) {
+    return { ...row, rejected: true, rejectReason: `EV ${(ev*100).toFixed(2)}% < ${(SEL.MIN_EV*100).toFixed(1)}%` };
   }
 
-  const adjustedKelly = Math.max(0, baseKelly * v2RiskMultiplier);
-  const minKelly = mode === "aggressive" ? 0.004 : 0.006;
-  if (adjustedKelly < minKelly) return { ...row, rejected: true, rejectReason: "Kelly仓位过低" };
-  // ===== r6 redesign: multiplicative play-specific bonuses (replaces old additive +0.1x) ===== (replaces old additive +0.1x) =====
-  let playMultiplier = 1;
-
-  // had play bonuses
-  if (row.play === "had" && row.key === context.favoriteSide) {
-    const strongFav = context.favoriteProb >= 0.62;
-    const mildFav = context.favoriteProb >= 0.52;
-    if (strongFav && !context.drawPressure) playMultiplier *= 1.15;
-    else if (mildFav && !context.drawPressure) playMultiplier *= 1.06;
-    else if (context.drawPressure && context.favoriteProb < 0.56) playMultiplier *= 0.85;
-  }
-  if (row.play === "had" && row.key === "d") {
-    if (context.lowBlockPenalty) playMultiplier *= 1.10;
-    else if (context.drawPressure || context.smallWinProfile) playMultiplier *= 1.06;
+  // 4. Layer 1B: Global divergence fuse (Bug-fix: removed <0.10 dead code)
+  const divergenceRatio = trueImplied > 0 ? prob / trueImplied : 999;
+  if (divergenceRatio > SEL.DIV_CAP) {
+    return { ...row, rejected: true, rejectReason: `偏离熔断: 模型${(prob*100).toFixed(1)}% vs 市场${(trueImplied*100).toFixed(1)}% (${divergenceRatio.toFixed(1)}x)` };
   }
 
-  // hhad bonuses
-  if (row.play === "hhad" && row.key === context.favoriteSide) {
-    if (context.favoriteCoverProfile) playMultiplier *= 1.15;
-    else if (context.deepHandicap || context.lowBlockPenalty || context.drawPressure) playMultiplier *= 0.85;
-  }
-  if (row.play === "hhad" && row.key === context.underdogSide) {
-    if (context.lowBlockPenalty || context.drawPressure || context.underdogCoverProb >= 0.54) playMultiplier *= 1.10;
-  }
-
-  // ttg bonuses
-  if (row.play === "ttg") {
-    const topTotal = context.totalTop[0];
-    if (topTotal?.key === row.key && topTotal?.value >= (mode === "aggressive" ? 0.13 : 0.19)) playMultiplier *= 1.10;
-    const n = Number(String(row.key).replace("s", ""));
-    if (context.secondHalfSurge && n >= 3) playMultiplier *= 1.08;
-    if ((context.lowBlockPenalty || context.drawPressure) && n <= 2) playMultiplier *= 1.06;
-  }
-
-  // r6: midTierPair — no deep handicap penetration
-  if (context.midTierPair && row.play === "hhad" && Math.abs(context.handicap) >= 1) playMultiplier *= 0.50;
-
-  // r6: circuitBreaker — kill high-variance plays
+  // 5. Circuit breaker guards
   if (context.circuitBreaker && ["crs", "hafu"].includes(row.play)) {
-    return { ...row, rejected: true, rejectReason: "circuit breaker: high-variance play rejected" };
-  }
-  if (context.circuitBreaker && row.play === "hhad" && context.deepHandicap) {
-    return { ...row, rejected: true, rejectReason: "circuit breaker: deep handicap rejected" };
-  }
-  // Deviation circuit breaker: model prob vs bookmaker implied prob divergence
-  const impliedProb = 1 / odds;
-  if (prob / impliedProb > 2.2) {
-    return { ...row, rejected: true, rejectReason: `偏离度熔断: 模型(${(prob*100).toFixed(1)}%)与庄家(${(impliedProb*100).toFixed(1)}%)偏差超2.2倍` };
+    return { ...row, rejected: true, rejectReason: "系统熔断: 拒绝高方差玩法" };
   }
 
-  // r6: strength bonus for extreme mismatch
-  const strengthBonus = (context.strengthModifier < 0.7) ? 0.15 : 0;
+  // 6. Layer 2: Fractional Kelly
+  const fullKelly = odds > 1 ? Math.max(0, ev / (odds - 1)) : 0;
+  const kellyScale = mode === "aggressive" ? 0.60 : SEL.KELLY_MULT;
+  const finalKelly = fullKelly * kellyScale;
+  if (finalKelly < SEL.MIN_KELLY) {
+    return { ...row, rejected: true, rejectReason: `Kelly ${finalKelly.toFixed(4)} < ${SEL.MIN_KELLY}` };
+  }
 
-  // Apply play multiplier to EV
-  const finalEV = ev * playMultiplier;
-  const finalKelly = adjustedKelly * playMultiplier;
-  const combinedMultiplier = clamp(playMultiplier * v2RiskMultiplier, 0.25, 1.50);
-
-  // r6.1: Kelly Fraction Score — odds-1 denominator naturally crushes high-odds tail EV
-  // Kelly Fraction = EV / (Odds - 1).  Higher odds → heavier penalty.
-  // This replaces the old (EV×1.8 + Kelly×2.4 + prob×0.22) composite with a single
-  // unified metric that auto-penalizes long-shot bets without hardcoded filters.
-  const kellyFractionScore = (Number.isFinite(ev) && ev > 0 && odds > 1)
-    ? (finalEV / (odds - 1)) * combinedMultiplier
-    : 0;
-  const v2Score = kellyFractionScore + strengthBonus;
-
-  // Tags
-  if (playMultiplier > 1.05) pushUnique(tags, "玩法优势");
-  if (playMultiplier < 0.90) pushUnique(tags, "玩法折扣");
-  if (context.strengthModifier < 0.7) pushUnique(tags, "实力碾压");
-  if (context.midTierPair) pushUnique(tags, "中游互啄");
+  // 7. Tags
   if (context.circuitBreaker) pushUnique(tags, "熔断保护");
-  if (context.dangerZone) pushUnique(tags, "Danger Zone");
-  if (context.marketDisagreement) pushUnique(tags, "盘口分歧");
+  if (divergenceRatio > 2.0) pushUnique(tags, "盘口分歧");
 
-  // Flag single-only
-  if (row.singleOnly) pushUnique(tags, "仅限单场");
+  // 8. Score = Kelly fraction
+  const v4Score = finalKelly * 100;
+  const confidence = finalKelly >= 0.04 ? "A" : finalKelly >= 0.02 ? "B" : finalKelly >= 0.008 ? "C" : "D";
 
-  const v2Confidence = adjustedKelly >= 0.04 && ev >= 0.08 ? "A"
-    : adjustedKelly >= 0.02 && ev >= 0.04 ? "B"
-      : adjustedKelly >= 0.008 && ev > 0 ? "C"
-        : "D";
   return {
     ...row,
-    ev: finalEV,
-    kellyFraction: finalKelly,
-    rawKellyFraction: fullKelly,
-    playMultiplier,
-    combinedMultiplier,
-    score: v2Score,
-    confidence: v2Confidence,
+    ev, kellyFraction: finalKelly, rawKellyFraction: fullKelly,
+    trueImplied, divergenceRatio,
+    playMultiplier: 1, combinedMultiplier: 1,
+    score: v4Score, confidence,
     selectionTags: tags.slice(0, 5),
-    selectionReason: `EV ${(finalEV * 100).toFixed(1)}%，${mode === "aggressive" ? "半Kelly" : "1/4Kelly"} ${(finalKelly * 100).toFixed(2)}%，模型概率 ${fmtPct(prob)}。`,
-    selectionVersion: PLAN_SELECTION_VERSION,
+    selectionReason: `EV ${(ev*100).toFixed(1)}%(去水) | Kelly ${(finalKelly*100).toFixed(2)}% | V2量化风控`,
+    selectionVersion: "selector-v2",
   };
 }
 
@@ -1197,8 +1107,17 @@ function attachDayPickMeta(match, pick, extra = {}) {
 
 function dayPlanOptionsForMatch(match, model, mode) {
   if (!model?.byPlay) return [];
+  // Bug-fix: reject matches where both teams lack real data (default Elo=1700, unknown archetype)
+  const homeArch = model.meta?.home?.archetype;
+  const awayArch = model.meta?.away?.archetype;
+  if (homeArch === "unknown" && awayArch === "unknown") return [];
   const plays = mode === "aggressive" ? ["had", "hhad", "ttg", "hafu", "crs"] : ["had", "hhad", "ttg"];
+  // Phase 3: hard EV filter — no negative-EV pick enters the day plan pool
   return rankedModelCandidates(match, model, mode, { plays })
+    .filter(pick => {
+      const ev = (pick.modelProb || 0) * (pick.odds || 1) - 1;
+      return ev > 0;
+    })
     .slice(0, 6)
     .map((pick) => attachDayPickMeta(match, pick));
 }
@@ -1295,26 +1214,27 @@ function maxUnitsForPick(pick, mode) {
 
 function allocateUnits(totalUnits, picks, mode) {
   // Always allocate EXACTLY totalUnits — conservative spends differently, not less
-  const HARD_CAP = 50; // 竞彩单注上限50倍
+  const HARD_CAP = 50;
   const totalKelly = picks.reduce((sum, pick) => sum + Math.max(0, Number(pick.kellyFraction) || 0), 0);
 
-  // Build allocation weights: Kelly proportion if available, else confidence tier
-  const weights = picks.map((pick) => {
+  // Sort by EV/Kelly BEFORE allocation — highest value picks get money first
+  const sorted = [...picks].sort((a, b) => (b.kellyFraction || b.score || 0) - (a.kellyFraction || a.score || 0));
+
+  // Build allocation weights
+  const weights = sorted.map((pick) => {
     if (totalKelly > 0) return Math.max(0, Number(pick.kellyFraction) || 0) / totalKelly;
     const tier = { A: 5, B: 3, C: 2, D: 1 }[pick.confidence] || 1;
-    // Conservative: amplify confidence gap (A gets more, C/D get less)
-    // Aggressive: flatten weights for broader coverage
     return mode === "aggressive" ? Math.sqrt(tier) : tier * tier;
   });
   const totalWeight = weights.reduce((s, w) => s + w, 0) || picks.length;
 
-  // First pass: proportional allocation, capped at HARD_CAP only
+  // First pass: proportional allocation, min 1 unit guaranteed
   let remaining = totalUnits;
-  const allocated = picks.map((pick, i) => {
+  const allocated = sorted.map((pick, i) => {
     const fair = Math.max(1, Math.min(HARD_CAP, Math.round(totalUnits * weights[i] / totalWeight)));
     const units = Math.min(fair, remaining);
     remaining -= units;
-    return { ...pick, units };
+    return { ...pick, units: Math.max(1, units) };  // Bug-fix: floor at 1 unit (¥2)
   });
 
   // Redistribute remaining: fill uncapped picks, prefer high-confidence
@@ -1642,12 +1562,21 @@ async function buildParlayPlan(matches, modelsByMatch, budget, mode) {
     const trueEV = cr?.expected_value ?? (batchItems[k] ? batchItems[k].prob_A * batchItems[k].prob_B * batchItems[k].odds_A * batchItems[k].odds_B - 1 : 0);
     const comboOdds = rawLegs[k].legs[0].odds * rawLegs[k].legs[1].odds;
     const comboProb = cr?.true_joint_prob ?? rawLegs[k].legs[0].prob * rawLegs[k].legs[1].prob;
+    // Combo margin: 1 − (1−m_A)×(1−m_B) — vig compounds exponentially
+    const getPlayMargin = (matchId, play) => {
+      const m = matches.find(x => x.id === matchId);
+      const pool = m?.pools?.[play] || [];
+      return pool.length ? pool.reduce((s, i) => s + 1/i.odds, 0) - 1 : 0;
+    };
+    const mA = getPlayMargin(rawLegs[k].legs[0].matchId, rawLegs[k].legs[0].play);
+    const mB = getPlayMargin(rawLegs[k].legs[1].matchId, rawLegs[k].legs[1].play);
+    const comboMargin = 1 - (1 - mA) * (1 - mB);
     // Fractional Kelly: EV/(odds−1), capped at 1% position
     const rawKelly = comboOdds > 1 ? trueEV / (comboOdds - 1) : 0;
     const kelly = Math.min(rawKelly * 0.125, 0.01);
     // Post-Copula filter: EV = prob*odds−1, >0.05 = >5% edge
     if (trueEV <= 0.05 || kelly <= 0.0005) continue;
-    parlays.push({ ...rawLegs[k], comboOdds, comboProb, ev: trueEV, kelly });
+    parlays.push({ ...rawLegs[k], comboOdds, comboProb, ev: trueEV, kelly, _comboMargin: comboMargin });
   }
   parlays.sort((a, b) => b.ev - a.ev);
   const selected = parlays.slice(0, 4);
@@ -1858,8 +1787,9 @@ function renderDayPlanResults() {
             </div>
             <div class="pick-meta">
               <span>组合赔率 ${p.comboOdds.toFixed(2)}</span>
-              <span>模型 ${fmtPct(p.comboProb)}</span>
-              <span>EV ${(p.ev*100).toFixed(1)}%</span>
+              <span>联合概率 ${fmtPct(p.comboProb)}</span>
+              <span>EV ${(p.ev >= 0 ? "+" : "")}${(p.ev*100).toFixed(1)}%</span>
+              <span class="${p._comboMargin > 0.15 ? 'edge-neg' : ''}">串关抽水 ${(p._comboMargin*100).toFixed(1)}%</span>
               <span>投入 ${fmtMoney(p.units * 2)}</span>
               <span>最高返 ${fmtMoney(p.units * 2 * p.comboOdds)}</span>
             </div>
@@ -1877,7 +1807,7 @@ function renderDayPlanResults() {
             <div class="pick-meta">
               <span>赔率 ${pick.odds.toFixed(2)}</span>
               <span>模型 ${fmtPct(pick.modelProb)}</span>
-              <span>差值 ${fmtSignedPct(pick.edge)}</span>
+              <span>EV ${(((pick.modelProb||0)*pick.odds-1) >= 0 ? "+" : "")}${(((pick.modelProb||0)*pick.odds-1)*100).toFixed(1)}%</span>
               <span>评分 ${pick.score.toFixed(2)}</span>
               <span>投入 ${fmtMoney(pick.units * 2)}</span>
               <span>最高返 ${fmtMoney(pick.units * 2 * pick.odds)}</span>
@@ -2038,64 +1968,134 @@ function riskLabel(play, modelProb, edge, match) {
   return { label: "中性", cls: "" };
 }
 
-function renderTable(match, model) {
-  if (!match) {
-    els.oddsTable.innerHTML = `<tr><td colspan="6">请选择比赛。</td></tr>`;
-    return;
-  }
-  const rows = rowsForPlay(match, model);
-  if (!rows.length) {
-    els.oddsTable.innerHTML = `<tr><td colspan="6">当前比赛没有 ${playLabels[state.selectedPlay]} 赔率。</td></tr>`;
-    return;
-  }
-  els.oddsTable.innerHTML = rows.map((row) => `
-    <tr>
-      <td><strong>${escapeHtml(row.label)}</strong></td>
-      <td class="num">${row.odds.toFixed(2)}</td>
-      <td class="num">${fmtPct(row.impliedProb)}</td>
-      <td class="num">${fmtPct(row.modelProb)}</td>
-      <td class="num ${row.edge >= 0 ? "edge-pos" : "edge-neg"}">${fmtSignedPct(row.edge)}</td>
-      <td><span class="risk-pill ${row.risk.cls}">${row.risk.label}</span></td>
-    </tr>
-  `).join("");
-}
+// V4 scanner cache: matchId → scan report
+const _scannerCache = new Map();
+let _scanReqId = 0;          // race-condition guard — discard stale responses
 
-function renderDecision(match, model) {
-  if (!match) {
+async function scanAndShowCards(match, model) {
+  if (!match || !model) {
+    els.scannerCards.innerHTML = "";
     els.decisionBox.textContent = "等待选择比赛。";
     return;
   }
-  const allEdges = Object.keys(playLabels).flatMap((play) => rowsForPlay(match, model, play));
-  const top = allEdges
-    .filter((row) => Number.isFinite(row.edge) && row.edge > 0)
-    .sort((a, b) => b.edge - a.edge)
-    .slice(0, 3);
-  const grade = gradeMatch(model.states);
+  const ck = match.id;
+  const reqId = ++_scanReqId;  // tag current request
+
+  // Use cache if fresh
+  const cached = _scannerCache.get(ck);
+  if (cached && !cached._stale) {
+    _renderScanCards(ck, cached);
+    return;
+  }
+
+  // ── Loading skeleton ──
+  els.scannerCards.innerHTML = `<div class="scanner-loading anim-shimmer" style="padding:24px;border-radius:8px">正在扫描竞彩价值洼地...</div>`;
+  els.decisionBox.innerHTML = `<div class="grade-card"><div class="scanner-loading">计算中...</div></div>`;
+
+  let scan = null;
+  try {
+    const resp = await fetch("/api/ttg-scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, match }),
+    });
+    if (resp.ok) {
+      scan = await resp.json();
+      scan._stale = false;
+      _scannerCache.set(ck, scan);
+    } else {
+      const errBody = await resp.text().catch(() => "");
+      throw new Error(errBody || `HTTP ${resp.status}`);
+    }
+  } catch (e) {
+    // Race-condition guard: discard if match changed during fetch
+    if (reqId !== _scanReqId) return;
+    els.scannerCards.innerHTML = `<div class="scanner-error">扫描失败：${escapeHtml(e.message)}。检查 Copula 引擎是否在线。</div>`;
+    els.decisionBox.innerHTML = `<div class="grade-card"><div>扫描器未响应</div></div>`;
+    return;
+  }
+
+  // Discard stale response
+  if (reqId !== _scanReqId) return;
+
+  // ── Render scan cards + report ──
+  _renderScanCards(ck, scan);
+}
+
+function _renderScanCards(ck, scan) {
+  // Discard if match no longer selected
+  const currentMatch = selectedMatch();
+  if (!currentMatch || currentMatch.id !== ck) return;
+
+  if (!scan || scan.error) {
+    els.scannerCards.innerHTML = `<div class="scanner-error">扫描器异常：${scan?.error || "未知错误"}</div>`;
+    els.decisionBox.innerHTML = `<div class="grade-card"><div>扫描器异常</div></div>`;
+    return;
+  }
+
+  // ── Scanner cards (HAD / HHAD / TTG) ──
+  let cardsHtml = "";
+  for (const play of (scan.plays || [])) {
+    const hasValue = play.bins.some(b => b.isValue);
+    cardsHtml += `<div class="scanner-card anim-fade-in-up${hasValue ? " scanner-card-value anim-pulse-glow" : ""}">`;
+    cardsHtml += `<div class="scanner-card-head">${play.label} ${hasValue ? " ⭐" : ""} <span class="scanner-margin">抽水 ${play.marketMargin}%</span></div>`;
+    for (const b of play.bins) {
+      const evClass = b.ev > 0.05 ? "scanner-ev-positive" : b.ev > 0 ? "scanner-ev-neutral" : "scanner-ev-negative";
+      const tag = b.isValue ? `<span class="edge-badge">⭐ 价值洼地</span>` : "";
+      cardsHtml += `<div class="scanner-row ${evClass}">
+        <span class="row-lbl">${b.label}</span>
+        <span class="num"><small>SP</small>${b.odds}</span>
+        <span class="num"><small>模型</small>${fmtPct(b.modelProb)}</span>
+        <span class="num"><small>市场</small>${fmtPct(b.marketProb)}</span>
+        <span class="num ev-val"><small>EV</small>${b.ev >= 0 ? "+" : ""}${b.ev.toFixed(2)}</span>
+        <span class="tag-cell">${tag}</span>
+      </div>`;
+    }
+    cardsHtml += "</div>";
+  }
+  els.scannerCards.innerHTML = cardsHtml;
+
+  // ── V4 core scan report ──
+  const vp = scan.valuePicks || [];
+  let vpList = "";
+  if (vp.length) {
+    vpList = vp.map(p =>
+      `<div class="edge-row">
+        <span><small style="color:var(--muted);margin-right:4px">[${p.play.toUpperCase()}]</small>${p.label}</span>
+        <strong class="edge-pos">EV ${p.ev >= 0 ? "+" : ""}${p.ev.toFixed(2)} <small style="color:var(--muted);margin-left:4px;font-weight:normal">SP${p.odds}</small></strong>
+      </div>`
+    ).join("");
+  } else {
+    vpList = `<div class="edge-row"><span>未发现显著价值洼地</span><strong>观望</strong></div>`;
+  }
+
   const research = selectedResearch();
-  const modelMetaHtml = renderModelMeta(model);
-  const topHtml = top.length
-    ? top.map((row) => `
-        <div class="edge-row">
-          <span>${playLabels[row.play]} · ${escapeHtml(row.label)}</span>
-          <strong class="edge-pos">${fmtSignedPct(row.edge)}</strong>
-        </div>
-      `).join("")
-    : `<div class="edge-row"><span>没有明显正差值玩法</span><strong>谨慎</strong></div>`;
+  const marginInfo = (scan.plays || []).map(p => `${p.label} ${p.marketMargin}%`).join(" | ");
 
   els.decisionBox.innerHTML = `
     <div class="grade-card">
-      <div class="grade-title"><span>方向评级</span><span>${grade.grade}</span></div>
-      <div>${grade.reason}</div>
+      <div class="grade-title"><span>V4.0 核心扫描</span><span>${vp.length} 个价值</span></div>
+      <div>体彩抽水率 → ${marginInfo || "无数据"}</div>
     </div>
     <div class="grade-card">
-      <div class="grade-title"><span>正差值 Top3</span><span>${research ? `情报${research.coverage.label}` : "未搜索"}</span></div>
-      <div class="top-edge">${topHtml}</div>
+      <div class="grade-title"><span>价值洼地</span><span>${research ? `情报${research.coverage?.label || "已刷新"}` : "未搜索"}</span></div>
+      <div class="top-edge">${vpList}</div>
     </div>
-    ${modelMetaHtml}
-    <div class="grade-card">
-      当前概率来自 V3.3 r6：λ乘数驱动的三状态泊松矩阵 + sporttery 去水赔率 + 联网情报 + 交互矩阵 + 熔断保护。WDL/让球/总进球/半全场均由统一λ衍生。首发/伤停/动机来源在下方列出。
+    <div class="grade-card model-meta-card">
+      <div class="grade-title"><span>引擎版本</span><span class="model-source-pill">V4.0 NB+Copula+DC+xG</span></div>
+      <div>NB负二项厚尾 → Gaussian Copula相依 → Dixon-Coles低分修正 → xG燃料接入。lambda乘数 + 交互矩阵 + 熔断保护仍由V3.3体系驱动。WDL/让球/总进球由统一得分矩阵衍生。</div>
     </div>
   `;
+}
+
+// Legacy table — replaced by V4 scanner cards
+function renderTable(match, model) {
+  scanAndShowCards(match, model).catch(e => console.error("scanCards:", e.message));
+}
+
+function renderDecision(match, model) {
+  // Decision panel is now rendered inside scanAndShowCards
+  // Keep stub for compatibility
 }
 
 function renderModelMeta(model) {
@@ -2253,21 +2253,27 @@ async function refreshFullModel(match = selectedMatch(), research = selectedRese
 
 let fullModelTimer = null;
 
+let _controlDebounceTimer = null;
 function handleControlChange() {
   const match = selectedMatch();
-  if (match) delete state.fullModelByMatch[match.id];
-  renderAll();
-  const research = selectedResearch();
-  if (!match || !research) return;
-  clearTimeout(fullModelTimer);
-  fullModelTimer = setTimeout(async () => {
-    try {
-      await refreshFullModel(match, research);
-      renderAll();
-    } catch {
-      // Keep the local fallback model visible when the full engine request fails.
-    }
-  }, 450);
+  if (match) { delete state.fullModelByMatch[match.id]; _scannerCache.delete(match.id); }
+  updateSliderLabels();
+  // Debounce 300ms: avoid flooding on every pixel drag
+  clearTimeout(_controlDebounceTimer);
+  _controlDebounceTimer = setTimeout(() => {
+    renderAll();
+    const research = selectedResearch();
+    if (!match || !research) return;
+    clearTimeout(fullModelTimer);
+    fullModelTimer = setTimeout(async () => {
+      try {
+        await refreshFullModel(match, research);
+        renderAll();
+      } catch {
+        // Keep local fallback model visible
+      }
+    }, 450);
+  }, 300);
 }
 
 function estimatedControlsForMatch(match) {
@@ -2532,21 +2538,47 @@ async function buildSimulationParlays(matches, stake) {
   }));
 }
 
+const KELLY_MULTIPLIER = 0.25;
+const MAX_POSITION_PCT = 0.05;
+
+function updateSimBalance() {
+  const sim = state.simulation || {};
+  const bankroll = sim.bankroll ?? 0;
+  const disp = els.simBalanceDisplay;
+  if (disp && bankroll > 0) {
+    disp.style.display = "";
+    const pct = sim.bankroll && sim.initialBankroll
+      ? ((bankroll / sim.initialBankroll - 1) * 100).toFixed(1) : "0.0";
+    const clr = bankroll >= (sim.initialBankroll || bankroll) ? "#2e7d32" : "#c00";
+    disp.innerHTML = `余额: <strong style="color:${clr}">¥${Math.round(bankroll).toLocaleString()}</strong> (${pct >= 0 ? "+" : ""}${pct}%)`;
+  }
+}
+
+function computeKellyStake(bankroll, modelProb, odds) {
+  const ev = modelProb * odds - 1;
+  if (ev <= 0 || odds <= 1) return 0;
+  const kellyFraction = ev / (odds - 1);
+  const safeFraction = Math.min(kellyFraction * KELLY_MULTIPLIER, MAX_POSITION_PCT);
+  return Math.max(2, Math.round(bankroll * safeFraction / 2) * 2); // min 2 yuan, even units
+}
+
 async function generateSimulation() {
   if (!state.matches.length) {
     setStatus("请先同步 sporttery 比赛。", true);
     return;
   }
-  const stake = Math.max(2, Math.floor((Number(els.simStakeInput.value) || 1000) / 2) * 2);
-  els.simStakeInput.value = stake;
+  const bankroll = Math.max(100, Number(els.simBankrollInput.value) || 10000);
+  els.simBankrollInput.value = bankroll;
   els.simGenerateBtn.disabled = true;
-  setStatus("正在生成模拟盘未来预测...");
+  setStatus("正在生成模拟盘未来预测（1/4 Kelly 仓位）...");
   try {
     const predictions = [];
     for (const match of state.matches) {
       const payload = await ensureFullModelForMatch(match);
       const pick = buildSimulationPick(match, payload.model);
       if (!pick) continue;
+      const ev = (pick.modelProb || 0) * (pick.odds || 1) - 1;
+      const stake = computeKellyStake(bankroll, pick.modelProb, pick.odds);
       predictions.push({
         id: `${match.id}-${pick.play}-${pick.key}`,
         matchId: match.id,
@@ -2563,12 +2595,11 @@ async function generateSimulation() {
         odds: pick.odds,
         modelProb: pick.modelProb,
         edge: pick.edge,
-        // V3.3 r3 scoring metadata
+        ev,
         score: pick.score,
         confidence: pick.confidence || "C",
         selectionTags: pick.selectionTags || [],
         selectionReason: pick.selectionReason || "",
-        // V3.3 signals snapshot
         v33Signals: {
           autoCorrected: payload.model?.meta?.layers?.correction?.autoCorrected || false,
           lbScore: payload.model?.meta?.layers?.signals?.lowBlockPenaltyScore || 0,
@@ -2578,24 +2609,34 @@ async function generateSimulation() {
           underdogClass: payload.model?.meta?.layers?.signals?.underdogClass || "",
         },
         stake,
+        positionPct: stake / bankroll,
         potentialReturn: stake * pick.odds,
         createdAt: new Date().toISOString(),
         status: "pending",
       });
     }
-    // Append parlay (2串1) predictions
+    // Append parlay (2串1) predictions — use Kelly stake for parlays too
     let parlayCount = 0;
     try {
-      const parlays = await buildSimulationParlays(state.matches, stake);
+      const parlayStake = computeKellyStake(bankroll, 0.15, 6.0); // conservative parlay Kelly
+      const parlays = await buildSimulationParlays(state.matches, parlayStake);
+      for (const p of parlays) { p.positionPct = p.stake / bankroll; }
       predictions.push(...parlays);
       parlayCount = parlays.length;
     } catch (e) { console.error('buildSimulationParlays failed:', e.message); }
 
     const existingSettled = state.simulation.history || [];
-    state.simulation = { predictions, history: existingSettled };
+    const existingBankroll = state.simulation.bankroll;
+    state.simulation = {
+      predictions,
+      history: existingSettled,
+      bankroll: existingBankroll ?? bankroll,
+      initialBankroll: bankroll,
+    };
     await persistState({ immediate: true });
     renderSimulation();
-    setStatus(`已生成 ${predictions.length - parlayCount} 场单关 + ${parlayCount} 组串关模拟预测。`);
+    updateSimBalance();
+    setStatus(`已生成 ${predictions.length - parlayCount} 场单关 + ${parlayCount} 组串关（1/4 Kelly · 单场≤5%）。`);
   } catch (error) {
     setStatus(`模拟预测失败：${error.message}`, true);
   } finally {
@@ -2719,13 +2760,18 @@ function predictionWon(prediction, result) {
 
 function settlePrediction(prediction, result) {
   const won = predictionWon(prediction, result);
+  const profit = won ? prediction.potentialReturn - prediction.stake : -prediction.stake;
+  // Update simulation bankroll
+  if (state.simulation.bankroll != null) {
+    state.simulation.bankroll += profit;
+  }
   return {
     ...prediction,
     status: won ? "won" : "lost",
     result,
     settledAt: new Date().toISOString(),
     returnAmount: won ? prediction.potentialReturn : 0,
-    profit: won ? prediction.potentialReturn - prediction.stake : -prediction.stake,
+    profit,
   };
 }
 
@@ -2743,8 +2789,12 @@ function settlePredictionsWithResults(resultByMatch) {
   if (!settled.length) return 0;
   state.simulation.predictions = remaining;
   state.simulation.history = [...settled, ...(state.simulation.history || [])];
+  if (!state.simulation.bankroll && state.simulation.initialBankroll) {
+    state.simulation.bankroll = state.simulation.initialBankroll;
+  }
   persistState({ immediate: true });
   renderSimulation();
+  updateSimBalance();
   return settled.length;
 }
 
@@ -2766,8 +2816,12 @@ function settleSimulation(targetId = null) {
   }
   state.simulation.predictions = remaining;
   state.simulation.history = [...settled, ...(state.simulation.history || [])];
+  if (!state.simulation.bankroll && state.simulation.initialBankroll) {
+    state.simulation.bankroll = state.simulation.initialBankroll;
+  }
   persistState({ immediate: true });
   renderSimulation();
+  updateSimBalance();
   setStatus(settled.length ? `已结算 ${settled.length} 场模拟预测。` : "没有可结算的已填赛果。", !settled.length);
 }
 
@@ -2928,9 +2982,11 @@ async function syncSimulationResults() {
 }
 
 function clearSimulation() {
-  state.simulation = { predictions: [], history: [] };
+  const initialBankroll = state.simulation.initialBankroll || Number(els.simBankrollInput.value) || 10000;
+  state.simulation = { predictions: [], history: [], bankroll: initialBankroll, initialBankroll };
   persistState({ immediate: true });
   renderSimulation();
+  updateSimBalance();
   setStatus("模拟盘已清空。");
 }
 
@@ -2948,7 +3004,12 @@ function renderSimulation() {
     ? historyWithCLV.reduce((s, i) => s + (i.stake || 0) * ((i.odds || 1) / (i.closingOdds || 1) - 1) * 100, 0)
       / historyWithCLV.reduce((s, i) => s + (i.stake || 0), 0)
     : 0;
+  const simBankroll = state.simulation.bankroll ?? state.simulation.initialBankroll ?? 0;
+  const bankrollPct = simBankroll && state.simulation.initialBankroll
+    ? ((simBankroll / state.simulation.initialBankroll - 1) * 100) : 0;
+  updateSimBalance();
   els.simulationSummary.innerHTML = `
+    <div class="sim-kpi"><span>资金池</span><strong class="${bankrollPct >= 0 ? 'edge-pos' : 'edge-neg'}">${fmtMoney(simBankroll)}</strong><small>${bankrollPct >= 0 ? "+" : ""}${bankrollPct.toFixed(1)}%</small></div>
     <div class="sim-kpi"><span>未来预测</span><strong>${predictions.length}</strong></div>
     <div class="sim-kpi"><span>已结算投入</span><strong>${fmtMoney(settledStake)}</strong></div>
     <div class="sim-kpi"><span>累计收益</span><strong class="${profit >= 0 ? "edge-pos" : "edge-neg"}">${fmtMoney(profit)}</strong></div>
@@ -2969,7 +3030,8 @@ function renderSimulation() {
         <span>${playLabels[item.play]} · ${escapeHtml(item.label)}</span>
         <span>赔率 ${item.odds.toFixed(2)}</span>
         <span>模型 ${fmtPct(item.modelProb)}</span>
-        <span>定投 ${fmtMoney(item.stake)}</span>
+        <span>仓位 ${(item.positionPct*100).toFixed(1)}% (${fmtMoney(item.stake)})</span>
+        <span>EV ${item.ev >= 0 ? "+" : ""}${(item.ev*100).toFixed(1)}%</span>
         <span>潜在返还 ${fmtMoney(item.potentialReturn)}</span>
       </div>
       <div class="result-inputs">
@@ -2992,7 +3054,7 @@ function renderSimulation() {
         <span>联合概率 ${fmtPct(item.comboProb)}</span>
         <span>EV ${(item.ev || 0).toFixed(2)}</span>
         <span>Kelly ${(item.kelly || 0).toFixed(4)}</span>
-        <span>定投 ${fmtMoney(item.stake)}</span>
+        <span>仓位 ${fmtMoney(item.stake)}</span>
         <span>潜在返还 ${fmtMoney(item.potentialReturn)}</span>
       </div>
     </div>
@@ -3007,9 +3069,11 @@ function renderSimulation() {
       <div class="settle-meta">
         <span>${playLabels[item.play]} · ${escapeHtml(item.label)}</span>
         <span>赛果 ${item.result?.full?.h}-${item.result?.full?.a}</span>
+        <span>下单EV ${item.ev >= 0 ? "+" : ""}${((item.ev||0)*100).toFixed(1)}%</span>
+        <span>模型 ${fmtPct(item.modelProb)}</span>
         <span>投入 ${fmtMoney(item.stake)}</span>
         <span>返还 ${fmtMoney(item.returnAmount || 0)}</span>
-        <span>盈亏 ${fmtMoney(item.profit || 0)}</span>
+        <span class="${(item.profit||0) >= 0 ? 'edge-pos' : 'edge-neg'}">盈亏 ${(item.profit||0) >= 0 ? "+" : ""}${fmtMoney(item.profit || 0)}</span>
         ${Number.isFinite(item.closingOdds) && item.closingOdds > 0 ? `<span class="${((item.odds||1)/(item.closingOdds||1)-1) >= 0 ? "edge-pos" : "edge-neg"}">闭盘 ${item.closingOdds.toFixed(2)} · CLV ${((item.odds||1)/(item.closingOdds||1)-1) >= 0 ? "+" : ""}${((item.odds / item.closingOdds - 1) * 100).toFixed(1)}%</span>` : ""}
       </div>
     </div>
@@ -3034,7 +3098,7 @@ function renderAll() {
   } else {
     safe('renderAll-default', () => {
       if (els.summaryStrip) els.summaryStrip.innerHTML = "";
-      if (els.oddsTable) els.oddsTable.innerHTML = `<tr><td colspan="6">请选择比赛。</td></tr>`;
+      if (els.scannerCards) els.scannerCards.innerHTML = `<div class="empty-state">请选择比赛。</div>`;
     });
     safe('renderRecommendations', () => renderRecommendations(null, null));
   }
@@ -3086,6 +3150,7 @@ async function researchCurrentMatch() {
     state.autoByMatch[match.id] = auto;
     applyAutoSettings(auto);
     await refreshFullModel(match, payload);
+    _scannerCache.delete(match.id);  // invalidate: new research → rescan
     setResearchExpanded(true);
     persistState();
     setStatus(`联网情报已刷新：${payload.coverage.label}，${payload.coverage.totalResults} 条候选来源。`);
@@ -3451,11 +3516,15 @@ renderDayPlan = function() {
 };
 
 const origRenderAll = renderAll;
+let _renderAllGuard = false;
 renderAll = function() {
+  if (_renderAllGuard) return; // prevent re-entrant calls
+  _renderAllGuard = true;
   origRenderAll();
   try {
     if (state.activeView === "workbench") showInPlayCountdown();
-  } catch (e) { console.error('renderAll wrapper showInPlayCountdown:', e.message); }
+  } catch (e) { console.error('renderAll wrapper:', e.message); }
+  _renderAllGuard = false;
 };
 els.parsePasteBtn.addEventListener("click", parsePastedJson);
 els.dayPlanDateSelect.addEventListener("change", () => {
@@ -3496,22 +3565,73 @@ els.simulationFuture.addEventListener("click", (event) => {
   if (button) settleSimulation(button.dataset.fillResult);
 });
 
-els.playTabs.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-play]");
-  if (!button) return;
-  state.selectedPlay = button.dataset.play;
-  $$("#playTabs button").forEach((item) => item.classList.toggle("active", item === button));
-  renderAll();
-});
-
+// playTabs removed in V4.0 — HAD/HHAD/TTG shown as scanner cards simultaneously
 async function initializeApp() {
   await hydratePersistentState();
   setResearchExpanded(state.researchExpanded);
   setModelIoExpanded(state.modelIoExpanded);
-  $$("#playTabs button").forEach((item) => item.classList.toggle("active", item.dataset.play === state.selectedPlay));
+  // playTabs removed in V4.0 — scanner cards replace per-play filtering
   setActiveView(state.activeView);
   renderAll();
   syncSporttery();
 }
 
 initializeApp();
+
+// ── Collector Dashboard ────────────────────────────────────
+const collectorEls = {
+  bar: () => $("#collectorBar"),
+  dot: () => $("#collectorDot"),
+  text: () => $("#collectorText"),
+  meta: () => $("#collectorMeta"),
+};
+
+let _collectorTimer = null;
+async function pollCollectorStatus() {
+  try {
+    const resp = await fetch("/api/collector-status");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const s = await resp.json();
+
+    const dot = collectorEls.dot();
+    const text = collectorEls.text();
+    const meta = collectorEls.meta();
+
+    if (!dot || !text) return;
+
+    // API health dot
+    dot.className = "collector-dot";
+    if (s.apiHealth === "200") dot.classList.add("ok");
+    else if (s.apiHealth === "403") dot.classList.add("err");
+    else if (s.apiHealth === "502") dot.classList.add("err");
+    else dot.classList.add("idle");
+
+    // Staleness check (>2h since last sync)
+    const lastSync = s.lastSyncAt ? new Date(s.lastSyncAt) : null;
+    const hoursAgo = lastSync ? (Date.now() - lastSync.getTime()) / 3600000 : 999;
+    const stale = !lastSync || hoursAgo > 2;
+
+    if (!lastSync) {
+      dot.classList.add("idle"); // gray — waiting for first sync
+      text.textContent = "采集器: 等待首次同步...";
+      if (meta) meta.textContent = `API: ${s.apiHealth}`;
+    } else if (stale) {
+      dot.classList.add("warn");
+      text.textContent = `采集器: 上次同步 ${hoursAgo.toFixed(1)}h 前 ⚠️`;
+      if (meta) meta.textContent = `${s.totalRecords} 条 · +${s.lastSyncNewRecords} new`;
+    } else {
+      dot.classList.add("ok");
+      text.textContent = `采集器: ${s.totalRecords} 条记录 · ${hoursAgo.toFixed(1)}h 前同步`;
+      if (meta) meta.textContent = `API: ${s.apiHealth} | +${s.lastSyncNewRecords} new`;
+    }
+  } catch (e) {
+    const dot = collectorEls.dot();
+    if (dot) { dot.className = "collector-dot err"; }
+    const text = collectorEls.text();
+    if (text) textContent = "采集器: 离线";
+  }
+}
+
+// Poll every 30s
+pollCollectorStatus();
+_collectorTimer = setInterval(pollCollectorStatus, 30000);

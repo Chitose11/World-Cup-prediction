@@ -535,6 +535,15 @@ textarea:focus {
   overflow: auto;
 }
 
+/* V4 scanner cards — full-width flex container */
+.scanner-cards-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 60px;
+}
+
 table {
   width: 100%;
   min-width: 680px;
@@ -1472,3 +1481,128 @@ tbody tr:last-child td {
   border-radius: 6px; background: #f5f5f5; cursor: pointer; color: #666;
 }
 .copula-cancel-btn:hover { background: #fee; border-color: #c00; color: #c00; }
+
+/* ── V4 Scan Cards (HAD / HHAD / TTG) ──────────────────────── */
+.scanner-card {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: #fff;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+}
+.scanner-card-value {
+  border-color: #a3d9b5;
+  box-shadow: 0 4px 12px rgba(13, 122, 111, 0.08);
+}
+.scanner-card-head {
+  font-size: 14px; font-weight: 800; color: var(--ink);
+  padding: 10px 16px; background: #fdfdfc;
+  border-bottom: 1px solid var(--line);
+  display: flex; gap: 8px; align-items: center;
+}
+.scanner-margin {
+  font-weight: 600; color: var(--muted); font-size: 12px; margin-left: auto;
+}
+.scanner-row {
+  display: grid;
+  grid-template-columns: 70px 70px 95px 95px 85px auto;
+  gap: 8px; font-size: 13px; padding: 10px 16px;
+  border-bottom: 1px solid var(--line); align-items: center;
+}
+.scanner-row:last-child { border-bottom: none; }
+.row-lbl { font-weight: 700; color: var(--ink); }
+.scanner-row .num { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.scanner-row small { color: var(--muted); font-size: 11px; margin-right: 4px; font-weight: 400; }
+.scanner-ev-positive { background: #f4faf4; }
+.scanner-ev-positive .ev-val { color: var(--good); font-weight: 900; }
+.scanner-ev-negative .ev-val, .scanner-ev-neutral .ev-val { color: var(--muted); }
+.tag-cell { display: flex; justify-content: flex-end; }
+.edge-badge {
+  display: inline-flex; align-items: center; background: #dcfce7; color: #166534;
+  padding: 2px 8px; border-radius: 999px; font-size: 11px;
+  font-weight: 800; border: 1px solid #bbf7d0; white-space: nowrap;
+}
+.scanner-loading {
+  text-align: center; padding: 24px; color: #999; font-size: 13px;
+  animation: scanner-pulse 1.2s ease-in-out infinite;
+}
+@keyframes scanner-pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
+.scanner-error {
+  text-align: center; padding: 16px; color: #c00; font-size: 13px;
+  border: 1px dashed #fcc; border-radius: 8px; margin: 8px 0;
+}
+
+/* ── Collector Dashboard ──────────────────────────────────── */
+.collector-bar {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 9000;
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 16px; background: #fafaf7; border-top: 1px solid #e0e0e0;
+  font-size: 12px; color: #666;
+}
+.collector-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #ccc;
+  flex-shrink: 0;
+}
+.collector-dot.ok { background: #4caf50; }
+.collector-dot.warn { background: #ff9800; animation: dot-pulse 1.5s infinite; }
+.collector-dot.err { background: #f44336; }
+@keyframes dot-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.collector-meta { margin-left: auto; color: #aaa; font-size: 11px; }
+
+/* ── Animation Library (adapted from react-bits) ──────────── */
+/* 1. Fade-in-up — scanner cards and panels */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.anim-fade-in-up {
+  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.anim-fade-in-up:nth-child(1) { animation-delay: 0.00s; }
+.anim-fade-in-up:nth-child(2) { animation-delay: 0.06s; }
+.anim-fade-in-up:nth-child(3) { animation-delay: 0.12s; }
+
+/* 2. Pulse glow — value pick highlights */
+@keyframes pulseGlow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(46,125,50,0.25); }
+  50%     { box-shadow: 0 0 0 6px rgba(46,125,50,0); }
+}
+.anim-pulse-glow {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+/* 3. Shimmer — loading skeleton */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.anim-shimmer {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e8e8e8 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* 4. Scale press — button click feedback */
+.anim-scale-press:active {
+  transform: scale(0.96);
+  transition: transform 0.1s ease;
+}
+
+/* 5. Slide-in-right — for side panels */
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.anim-slide-in {
+  animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 6. Number tick — counter animation */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.anim-count-up {
+  animation: countUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
