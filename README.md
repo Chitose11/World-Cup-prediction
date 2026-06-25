@@ -6,15 +6,20 @@
 
 ## 当前版本
 
-- 应用版本：`0.5.0`
+- 应用版本：`0.5.2`
 - 模型版本：`World Cup V4.0-a4` (xG 数据库驱动 + Copula 联合分布 + 251 俱乐部支持)
-- 核心变化：彻底抛弃了早期表层胜平负的加减法修补，全面转由底层泊松 Lambda 乘数驱动，并融入 2018+2022 世界杯 xG 真实数据；新增俱乐部球队支持、Copula 联合分布计算、历史数据迁移与 SQLite 存储。
+- 核心变化：联网情报全面升级——伤停/赛程动机/战术分析三类查询改用 sporttery 官方 bssj 数据源，首发阵容用射手数据补充，仅盘口异动保留联网搜索。
 
 ## 核心能力
 
 - 同步 sporttery 官方足球计算器赔率接口。
 - 展示胜平负、让球胜平负、比分、总进球、半全场等玩法的隐含概率、模型概率、差值和风险。
-- 联网搜索首发/预测阵容、伤停/停赛、赛程动机、出线形势和盘口异动（支持 Tavily Search 回退机制）。
+- 联网搜索首发/预测阵容、赛程动机、出线形势和盘口异动（支持 Tavily Search 回退机制）。
+- **bssj 官方数据优先**：以下三类信息优先从 sporttery 官方 bssj 接口获取结构化数据，不可用时自动回退联网搜索：
+  - **伤停/停赛**：`getInjurySuspensionV1` — 球员姓名、号码、位置、伤病/停赛标志、出场统计
+  - **赛程动机/积分榜**：`getMatchTablesV1` + `getFutureMatchesV1` — 小组排名积分、未来赛程密集度
+  - **战术分析/近况**：`getMatchFeatureV1` + `getMatchResultV1` + `getResultHistoryV1` — 近10场战况、场均进球/失球、近期比分、历史交锋
+  - **首发阵容**：`getMatchPlayerV1` — 射手/助攻数据作为补充，仍保留联网搜索获取预测阵容
 - 自动把联网情报映射为模型输入，并刷新完整 V4.0 模型输出。
 - **三重风控选择器**：按模型方向、赔率差值、比分矩阵、让球一致性筛选候选项；结合 `EV / (Odds - 1)` 的分母惩罚自然粉碎长尾陷阱；配置了 `2.2倍偏离度熔断` 防止 EV 幻觉。
 - **CLV 分类账 (Closed-Loop Value)**：实时记录投注、自动捕获收盘赔率、计算 CLV 指标、支持 T-10 快照回退机制。
@@ -83,6 +88,25 @@ npm start
 用于实时比赛数据：
 ```powershell
 $env:ANYSPORT_API_KEY="your-anysport-api-key"
+```
+
+### bssj 官方数据 API
+
+项目提供两个层级的 bssj 数据访问：
+
+**单项查询** `GET /api/sporttery-injury?mid={sportteryMatchId}` — 仅返回伤停数据
+
+**全量查询** `GET /api/sporttery-bssj?mid={sportteryMatchId}` — 并行抓取全部6个API：
+- `getMatchFeatureV1` — 特征分析（近10场战况、场均进球失球）
+- `getMatchTablesV1` — 积分榜（小组排名、胜平负、积分）
+- `getMatchPlayerV1` — 射手信息（进球、助攻、出场统计）
+- `getResultHistoryV1` — 历史交锋统计
+- `getMatchResultV1` — 比赛近况（近期比分、胜负）
+- `getFutureMatchesV1` — 未来赛事（赛程密集度/轮换风险）
+
+示例：
+```powershell
+curl "http://localhost:4173/api/sporttery-bssj?mid=2040292"
 ```
 
 ## 桌面版打包
@@ -174,7 +198,7 @@ node scripts/backtest-v33-selector.js
 ```text
 src/                         后端服务、模型引擎、Electron 入口
   ├── v4-engine.js          V4.0 模型引擎（含 251+ 俱乐部支持、Copula）
-  ├── server.js             HTTP 服务器 + Auto Monitor + 采集状态 API
+  ├── server.js             HTTP 服务器 + Auto Monitor + 采集状态 API + 伤停 bssj API
   ├── jingcai-ttg-scanner.js 玩法扫描器
   ├── anysport-service.js   AnySport 实时数据服务
   └── electron-main.js      Electron 桌面入口
@@ -200,6 +224,19 @@ dist/                        (自动生成) 打包产物，勿提交
 ```
 
 ## 更新日志
+
+### 0.5.2 (2026-06-25) - 联网情报 bssj 全面接入
+- **赛程动机改用官方数据**：`getMatchTablesV1`（积分榜）+ `getFutureMatchesV1`（未来赛事），自动输出小组排名、积分、未来赛程密集度
+- **战术分析改用官方数据**：`getMatchFeatureV1`（特征分析）+ `getMatchResultV1`（比赛近况）+ `getResultHistoryV1`（历史交锋），自动输出近10场战况、场均进球/失球、近期比分
+- **首发阵容补充射手数据**：`getMatchPlayerV1` 提供进球/助攻排行作为补充，仍保留联网搜索获取完整预测阵容
+- **新增 `/api/sporttery-bssj` 端点**：一次性并行抓取全部6个 bssj API
+- **盘口异动保留联网搜索**：该类别无对应 bssj API
+
+### 0.5.1 (2026-06-25) - 伤停数据源切换
+- **伤停信息改为官方来源**：优先从 sporttery 官方 bssj API (`getInjurySuspensionV1.qry`) 直接获取伤停/停赛数据
+- **新增 `/api/sporttery-injury` 端点**：独立提供结构化伤停数据查询
+- **伤停数据格式化**：输出球员姓名、号码、位置、伤病/停赛标志、出场统计
+- **自动回退机制**：sporttery API 不可用时自动回退到 Tavily/Bing 联网搜索
 
 ### 0.5.0 (2026-06-25) - V4.0 正式版发布
 - **版本升级**：0.4.0 → 0.5.0

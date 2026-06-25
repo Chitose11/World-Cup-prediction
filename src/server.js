@@ -465,6 +465,98 @@ async function fetchSportteryResults({ from, to, pageSize = 80 } = {}) {
   return transformSportteryResults(data, range);
 }
 
+// 从 sporttery.cn 官方 bssj 页面 API 抓取伤停信息
+// mid: sportteryMatchId（即 calculator API 返回的 matchId）
+async function fetchSportteryInjury(mid) {
+  const url = new URL("https://webapi.sporttery.cn/gateway/uniform/football/getInjurySuspensionV1.qry");
+  url.searchParams.set("sportteryMatchId", String(mid));
+  const response = await fetch(url, {
+    headers: {
+      accept: "application/json",
+      origin: "https://m.sporttery.cn",
+      referer: "https://m.sporttery.cn/",
+      "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Sporttery injury HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  if (data?.errorCode !== "0" && data?.errorCode !== 0) {
+    return { ok: false, error: data?.errorMessage || "Unknown error", source: "sporttery-injury-api" };
+  }
+  const value = data?.value || {};
+  const formatTeam = (team) => {
+    if (!team) return { name: "", players: [] };
+    return {
+      name: team.teamShortName || "",
+      sportteryTeamId: team.sportteryTeamId,
+      players: (team.injuriesAndSuspensionsList || []).map((p) => ({
+        name: p.personName || "",
+        number: p.uniformNo || "",
+        position: p.playerPositionDesc || "",
+        isInjured: p.injuryFlag === 1,
+        isSuspended: p.suspensionFlag === 1,
+        appearances: p.appearanceCnt || 0,
+        starts: p.startedMatchCnt || 0,
+        subs: p.substituteMatchCnt || 0,
+      })),
+    };
+  };
+  return {
+    ok: true,
+    source: "sporttery-injury-api",
+    fetchedAt: new Date().toISOString(),
+    mid,
+    home: formatTeam(value.home),
+    away: formatTeam(value.away),
+  };
+}
+
+// 批量抓取 sporttery bssj 所有分析数据（并行请求）
+async function fetchBssjAll(mid) {
+  const sportteryId = String(mid);
+  const baseHeaders = {
+    accept: "application/json",
+    origin: "https://m.sporttery.cn",
+    referer: "https://m.sporttery.cn/",
+    "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+  };
+
+  const fetchApi = async (endpoint) => {
+    const url = new URL(`https://webapi.sporttery.cn/gateway/uniform/football/${endpoint}.qry`);
+    url.searchParams.set("sportteryMatchId", sportteryId);
+    const r = await fetch(url, { headers: baseHeaders });
+    if (!r.ok) throw new Error(`${endpoint} HTTP ${r.status}`);
+    const data = await r.json();
+    return data?.errorCode === "0" || data?.errorCode === 0 ? data.value : null;
+  };
+
+  const [feature, tables, players, resultHistory, matchResult, future] = await Promise.allSettled([
+    fetchApi("getMatchFeatureV1"),
+    fetchApi("getMatchTablesV1"),
+    fetchApi("getMatchPlayerV1"),
+    fetchApi("getResultHistoryV1"),
+    fetchApi("getMatchResultV1"),
+    fetchApi("getFutureMatchesV1"),
+  ]);
+
+  const getValue = (settled) => settled.status === "fulfilled" ? settled.value : null;
+
+  return {
+    ok: true,
+    source: "sporttery-bssj",
+    fetchedAt: new Date().toISOString(),
+    mid: sportteryId,
+    feature: getValue(feature),
+    tables: getValue(tables),
+    players: getValue(players),
+    resultHistory: getValue(resultHistory),
+    matchResult: getValue(matchResult),
+    future: getValue(future),
+  };
+}
+
 function teamSearchName(name = "") {
   const normalized = name.replace(/\s+/g, "").toLowerCase();
   const directAliases = [
@@ -756,7 +848,217 @@ async function searchResearchCategory(query) {
 async function researchMatch(params) {
   const queries = buildResearchQueries(params);
   const categories = [];
+  const bbsjUrl = params.sportteryMatchId
+    ? `https://m.sporttery.cn/zqlszl/bssj/index.html?mid=${params.sportteryMatchId}`
+    : null;
+
+  // 1. 并行抓取 sporttery 官方数据
+  let bssjInjury = null;
+  let bssjAll = null;
+  if (params.sportteryMatchId) {
+    const [injury, all] = await Promise.allSettled([
+      fetchSportteryInjury(params.sportteryMatchId),
+      fetchBssjAll(params.sportteryMatchId),
+    ]);
+    bssjInjury = injury.status === "fulfilled" ? injury.value : null;
+    bssjAll = all.status === "fulfilled" ? all.value : null;
+  }
+
+  // 2. 格式化辅助函数
+  const formatBssjInjury = () => {
+    const { home, away } = bssjInjury;
+    const formatTeam = (t) => {
+      if (!t.players.length) return `${t.name}：暂无伤停`;
+      return [`${t.name}伤停：`, ...t.players.map((p) => {
+        const tags = [];
+        if (p.isInjured) tags.push("伤病");
+        if (p.isSuspended) tags.push("停赛");
+        return `  ${p.number}号 ${p.name}（${p.position}）${tags.join("+")}，出场${p.appearances}次/首发${p.starts}次`;
+      })].join("\n");
+    };
+    return formatTeam(home) + "\n" + formatTeam(away);
+  };
+
+  const formatBssjMotivation = () => {
+    if (!bssjAll?.tables?.tables) return null;
+    const t = bssjAll.tables;
+    const lines = [`赛事：${t.tournamentShortName || ""} ${t.seasonName || ""}`];
+    for (const row of t.tables || []) {
+      const g = row.groupName ? `[${row.groupName}] ` : "";
+      lines.push(`${g}${row.teamShortName}：排名${row.ranking}，${row.totalLegCnt}场${row.winGoalMatchCnt}胜${row.drawMatchCnt}平${row.lossGoalMatchCnt}负，积分${row.points}（胜率${row.winProbability}）`);
+    }
+
+    // 未来赛事（轮换风险）
+    if (bssjAll?.future) {
+      const { home, away } = bssjAll.future;
+      const fmtTeam = (name, list) => {
+        if (!list?.length) return null;
+        const next3 = list.slice(0, 3).map((m) => `${m.matchDateTime?.slice(0, 10)} ${m.homeTeamShortName} vs ${m.awayTeamShortName}（${m.tournamentShortName}）`);
+        return `${name}未来赛事：\n${next3.map((s) => `  ${s}`).join("\n")}`;
+      };
+      const hf = fmtTeam(home?.teamShortName, home?.matchList);
+      const af = fmtTeam(away?.teamShortName, away?.matchList);
+      if (hf) lines.push(hf);
+      if (af) lines.push(af);
+    }
+    return lines.join("\n");
+  };
+
+  const formatBssjTactics = () => {
+    const lines = [];
+    const f = bssjAll?.feature;
+
+    // 特征分析
+    if (f) {
+      if (f.homeTeamShortName && f.awayTeamShortName) {
+        const h = f.homeTeamShortName, a = f.awayTeamShortName;
+
+        // 近10场战况 (eachHomeAway)
+        if (f.eachHomeAway?.totalLegCnt) {
+          const ea = f.eachHomeAway;
+          lines.push(`近10场战况：`);
+          lines.push(`  ${h}：${ea.homeWinGoalMatchCnt}胜${ea.homeDrawMatchCnt}平${ea.homeLossGoalMatchCnt}负（进球比例${ea.homeScoreRatio}%）`);
+          lines.push(`  ${a}：${ea.awayWinGoalMatchCnt}胜${ea.awayDrawMatchCnt}平${ea.awayLossGoalMatchCnt}负（进球比例${ea.awayScoreRatio}%）`);
+        }
+
+        // 场均进球/失球
+        if (f.goalAvg) {
+          lines.push(`场均进球：${h} ${f.goalAvg.homeGoalAvgCnt}球 vs ${a} ${f.goalAvg.awayGoalAvgCnt}球`);
+        }
+        if (f.lossGoalAvg) {
+          lines.push(`场均失球：${h} ${f.lossGoalAvg.homeLossGoalAvgCnt}球 vs ${a} ${f.lossGoalAvg.awayLossGoalAvgCnt}球`);
+        }
+      }
+
+      // 历史交锋
+      if (bssjAll?.resultHistory?.statistics?.totalLegCnt > 0) {
+        const s = bssjAll.resultHistory.statistics;
+        lines.push(`历史交锋：共${s.totalLegCnt}场，${f.homeTeamShortName} ${s.winGoalMatchCnt}胜${s.drawMatchCnt}平${s.lossGoalMatchCnt}负（胜率${s.winProbability}）`);
+      }
+    }
+
+    // 近期比赛结果
+    if (bssjAll?.matchResult) {
+      const { home, away } = bssjAll.matchResult;
+      const fmtResults = (name, list, count) => {
+        if (!list?.length) return null;
+        const recent = list.slice(0, count).map((m) => {
+          const result = m.winningTeam === "home" ? (m.homeTeamShortName === name ? "胜" : "负")
+            : m.winningTeam === "away" ? (m.awayTeamShortName === name ? "胜" : "负") : "平";
+          return `  ${m.matchDate} ${m.homeTeamShortName} ${m.fullCourtGoal} ${m.awayTeamShortName}（${result}）`;
+        });
+        return `${name}近${count}场：\n${recent.join("\n")}`;
+      };
+      const hr = fmtResults(home?.teamShortName || "", home?.matchList, 5);
+      const ar = fmtResults(away?.teamShortName || "", away?.matchList, 5);
+      if (hr) lines.push(hr);
+      if (ar) lines.push(ar);
+    }
+
+    // 射手信息
+    if (bssjAll?.players) {
+      const { home, away } = bssjAll.players;
+      const fmtScorers = (name, list) => {
+        if (!list?.length) return null;
+        const top = list.slice(0, 3).map((p) => `${p.personName}(${p.uniformNo}号/${p.playerPositionDesc})：${p.goalCnt}球${p.assistCnt}助`);
+        return `${name}射手：\n  ${top.join("\n  ")}`;
+      };
+      const hs = fmtScorers(home?.teamShortName, home?.playerList);
+      const as = fmtScorers(away?.teamShortName, away?.playerList);
+      if (hs) lines.push(hs);
+      if (as) lines.push(as);
+    }
+
+    return lines.length ? lines.join("\n") : null;
+  };
+
+  const formatBssjLineup = () => {
+    // 首发阵容 bssj 无法提供完整数据，仅输出射手作为补充
+    if (!bssjAll?.players) return null;
+    const { home, away } = bssjAll.players;
+    const lines = ["【注：以下仅为赛事射手数据，非预测首发阵容】"];
+    const fmt = (name, list) => {
+      if (!list?.length) return `${name}：暂无射手数据`;
+      return [`${name}主要射手（${bssjAll.players.seasonName || ""} ${bssjAll.players.tournamentShortName || ""}）：`,
+        ...list.slice(0, 5).map((p) => `  ${p.personName}(${p.uniformNo}号/${p.playerPositionDesc})：${p.goalCnt}球${p.assistCnt}助，首发${p.startedMatchCnt}/替补${p.substituteMatchCnt}`)
+      ].join("\n");
+    };
+    return fmt(home?.teamShortName || "主队", home?.playerList || [])
+      + "\n" + fmt(away?.teamShortName || "客队", away?.playerList || []);
+  };
+
+  // 3. 处理各类别
+  const bssjFormatters = {
+    injury: { data: bssjInjury, format: formatBssjInjury, signalKey: "injury" },
+    motivation: { data: bssjAll?.tables, format: formatBssjMotivation, signalKey: "motivation" },
+    tactics: { data: bssjAll?.feature, format: formatBssjTactics, signalKey: "tactics" },
+  };
+
   for (const item of queries) {
+    const fmt = bssjFormatters[item.key];
+
+    if (fmt?.data) {
+      const summary = fmt.format();
+      if (summary) {
+        const isInjury = item.key === "injury";
+        const titleMap = {
+          injury: `${params.home || "主队"} vs ${params.away || "客队"} 官方伤停一览`,
+          motivation: `${params.home || "主队"} vs ${params.away || "客队"} 积分榜与赛程`,
+          tactics: `${params.home || "主队"} vs ${params.away || "客队"} 特征分析与近况`,
+        };
+        categories.push({
+          ...item,
+          key: item.key,
+          searchUrl: bbsjUrl,
+          ok: true,
+          provider: "sporttery-bssj",
+          providerError: "",
+          answer: summary,
+          results: [{
+            title: titleMap[item.key] || `${item.label}（官方数据）`,
+            url: bbsjUrl,
+            snippet: summary,
+            source: "sporttery-bssj",
+          }],
+          signals: { [fmt.signalKey]: true },
+          bssjData: isInjury ? { injury: bssjInjury } : { all: bssjAll },
+        });
+        continue;
+      }
+    }
+
+    // 首发阵容：bssj 提供射手补充，但仍需联网搜索完整预测阵容
+    if (item.key === "lineup" && bssjAll?.players) {
+      const supplement = formatBssjLineup();
+      if (supplement) {
+        const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(item.query)}&setlang=zh-CN&mkt=zh-CN`;
+        try {
+          const search = await searchResearchCategory(item.query);
+          categories.push({
+            ...item,
+            searchUrl,
+            ok: true,
+            provider: search.provider,
+            providerError: search.providerError,
+            answer: supplement + "\n\n" + (search.answer || ""),
+            results: [
+              { title: "官方射手数据", url: bbsjUrl, snippet: supplement, source: "sporttery-bssj" },
+              ...search.results,
+            ],
+            signals: { ...extractSignals(search.results), lineup: true },
+          });
+        } catch (error) {
+          categories.push({
+            ...item, key: "lineup", searchUrl: bbsjUrl, ok: true, provider: "sporttery-bssj",
+            answer: supplement, results: [{ title: "官方射手数据", url: bbsjUrl, snippet: supplement, source: "sporttery-bssj" }],
+            signals: { lineup: true },
+          });
+        }
+        continue;
+      }
+    }
+
+    // 回退到联网搜索
     const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(item.query)}&setlang=zh-CN&mkt=zh-CN`;
     try {
       const search = await searchResearchCategory(item.query);
@@ -774,6 +1076,7 @@ async function researchMatch(params) {
       categories.push({ ...item, searchUrl, ok: false, error: error.message, results: [], signals: {} });
     }
   }
+
   const totalResults = categories.reduce((sum, item) => sum + item.results.length, 0);
   const categoryHits = categories.reduce((sum, item) => sum + (item.results.length ? 1 : 0), 0);
   const signalCount = categories.reduce((sum, item) => {
@@ -788,6 +1091,7 @@ async function researchMatch(params) {
     fetchedAt: new Date().toISOString(),
     match: params,
     categories,
+    bssj: { injury: bssjInjury, all: bssjAll },
     coverage: {
       totalResults,
       categoryHits,
@@ -854,12 +1158,40 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/api/research") {
     try {
+      const sportteryMatchId = url.searchParams.get("sportteryMatchId");
       json(res, 200, await researchMatch({
         home: url.searchParams.get("home") || "",
         away: url.searchParams.get("away") || "",
         league: url.searchParams.get("league") || "",
         date: url.searchParams.get("date") || "",
+        sportteryMatchId: sportteryMatchId ? Number(sportteryMatchId) : null,
       }));
+    } catch (error) {
+      json(res, 502, { ok: false, error: error.message, fetchedAt: new Date().toISOString() });
+    }
+    return;
+  }
+  if (url.pathname === "/api/sporttery-injury") {
+    try {
+      const mid = url.searchParams.get("mid");
+      if (!mid) {
+        json(res, 400, { ok: false, error: "缺少 mid 参数（sportteryMatchId）" });
+        return;
+      }
+      json(res, 200, await fetchSportteryInjury(mid));
+    } catch (error) {
+      json(res, 502, { ok: false, error: error.message, fetchedAt: new Date().toISOString() });
+    }
+    return;
+  }
+  if (url.pathname === "/api/sporttery-bssj") {
+    try {
+      const mid = url.searchParams.get("mid");
+      if (!mid) {
+        json(res, 400, { ok: false, error: "缺少 mid 参数（sportteryMatchId）" });
+        return;
+      }
+      json(res, 200, await fetchBssjAll(mid));
     } catch (error) {
       json(res, 502, { ok: false, error: error.message, fetchedAt: new Date().toISOString() });
     }
