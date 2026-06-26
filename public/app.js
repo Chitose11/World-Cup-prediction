@@ -48,6 +48,7 @@ const els = {
   simulationView: $("#simulationView"),
   poolSelect: $("#poolSelect"),
   syncBtn: $("#syncBtn"),
+  stageSelect: $("#stageSelect"),
   statusLine: $("#statusLine"),
   matchSearch: $("#matchSearch"),
   matchList: $("#matchList"),
@@ -1835,21 +1836,46 @@ async function exportDayPlanForAI() {
   if (!matches.length) return;
 
   els.dayPlanExportBtn.disabled = true;
-  setStatus("正在导出比赛数据...");
+  setStatus("正在导出 V4 分析数据...");
 
   try {
     const exportData = matches.map(match => {
+      // Raw pools
       const pools = {};
       for (const play of ["had", "hhad", "ttg", "hafu", "crs"]) {
         const items = match.pools?.[play] || match[play] || [];
         if (items.length) {
           pools[play] = items.map(item => ({
-            key: item.key,
-            label: item.label || item.key,
-            odds: item.odds,
+            key: item.key, label: item.label || item.key, odds: item.odds,
           }));
         }
       }
+
+      // V4 model data
+      const fullModel = state.fullModelByMatch[match.id];
+      const model = fullModel?.model;
+      const v4 = model ? {
+        states: model.states,
+        byPlay: Object.fromEntries(
+          ["had","hhad","ttg","hafu","crs"].map(play => {
+            const probs = model.byPlay?.[play] || {};
+            return [play, probs];
+          })
+        ),
+        signals: {
+          dangerZone: model.meta?.layers?.signals?.dangerZone || false,
+          favoriteClass: model.meta?.layers?.signals?.favoriteClass || "",
+          underdogClass: model.meta?.layers?.signals?.underdogClass || "",
+          unstableFavorite: model.meta?.layers?.signals?.unstableFavorite || false,
+          lowBlockPenaltyScore: model.meta?.layers?.signals?.lowBlockPenaltyScore || 0,
+          interactionLambdaMultipliers: model.meta?.layers?.signals?.interactionLambdaMultipliers || {},
+        },
+        lambdas: model.meta?.lambdas || {},
+        grade: model.meta?.grade?.grade || "C",
+        circuitBreaker: model.meta?.r6CircuitBreaker?.fired || false,
+        version: model.meta?.source || "v4",
+      } : null;
+
       return {
         number: match.number,
         home: match.homeShort || match.home,
@@ -1859,21 +1885,25 @@ async function exportDayPlanForAI() {
         time: match.matchTime,
         hhadGoalLine: match.hhadGoalLine,
         pools,
+        v4model: v4,
       };
     });
 
+    const hasModel = exportData.filter(m => m.v4model).length;
     const blob = new Blob([JSON.stringify({
       exportedAt: new Date().toISOString(),
+      engineVersion: "World Cup V4.0 NB+Copula+DC+xG",
       totalMatches: exportData.length,
+      withModel: hasModel,
       matches: exportData,
     }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `sporttery-raw-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `v4-analysis-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setStatus(`已导出 ${exportData.length} 场比赛原始数据。`);
+    setStatus(`已导出 ${exportData.length} 场比赛（${hasModel} 场含 V4 模型）。`);
   } catch (error) {
     setStatus(`导出失败：${error.message}`, true);
   } finally {
@@ -1965,7 +1995,12 @@ function _renderScanCards(ck, scan) {
   for (const play of (scan.plays || [])) {
     const hasValue = play.bins.some(b => b.isValue);
     cardsHtml += `<div class="scanner-card anim-fade-in-up${hasValue ? " scanner-card-value anim-pulse-glow" : ""}">`;
-    cardsHtml += `<div class="scanner-card-head">${play.label} ${hasValue ? " ⭐" : ""} <span class="scanner-margin">抽水 ${play.marketMargin}%</span></div>`;
+    // Compute excess vig vs fair baseline
+    const fairBaseline = play.play === "hhad" ? 4 : 3;
+    const excessVig = Math.max(0, play.marketMargin - fairBaseline);
+    const heatLevel = excessVig > 15 ? "hot" : excessVig > 10 ? "warm" : excessVig > 5 ? "mild" : "";
+    const heatLabel = heatLevel === "hot" ? " 🔥散户火葬场" : heatLevel === "warm" ? " ⚠️过热" : heatLevel === "mild" ? " 偏热" : "";
+    cardsHtml += `<div class="scanner-card-head${heatLevel ? " head-"+heatLevel : ""}">${play.label} ${hasValue ? " ⭐" : ""} <span class="scanner-margin">抽水 ${play.marketMargin}%${heatLabel}</span></div>`;
     for (const b of play.bins) {
       const evClass = b.ev > 0.05 ? "scanner-ev-positive" : b.ev > 0 ? "scanner-ev-neutral" : "scanner-ev-negative";
       const tag = b.isValue ? `<span class="edge-badge">⭐ 价值洼地</span>` : "";
@@ -2155,6 +2190,7 @@ function currentControls() {
     lambdaAway: Number(els.lambdaAway.value),
     profile: els.profileSelect.value,
     tempo: els.tempoSelect.value,
+    matchStage: (els.stageSelect?.value) || "group",
     confidence: selectedAutoJudge()?.confidence || selectedResearch()?.coverage?.label || "",
   };
 }
@@ -3066,6 +3102,7 @@ async function researchCurrentMatch() {
       away: match.away,
       league: match.league || "",
       date: match.matchDate || match.businessDate || "",
+      sportteryMatchId: match.id || "",
     });
     const response = await fetch(`/api/research?${params.toString()}`);
     const payload = await response.json();
@@ -3190,6 +3227,7 @@ els.lambdaHome.addEventListener("input", handleControlChange);
 els.lambdaAway.addEventListener("input", handleControlChange);
 els.profileSelect.addEventListener("change", handleControlChange);
 els.tempoSelect.addEventListener("change", handleControlChange);
+if (els.stageSelect) els.stageSelect.addEventListener("change", handleControlChange);
 function getBestModelForMatch(match) {
   if (!match) return null;
   const cached = state.fullModelByMatch[match.id];
@@ -3451,6 +3489,57 @@ renderAll = function() {
   _renderAllGuard = false;
 };
 els.parsePasteBtn.addEventListener("click", parsePastedJson);
+
+// ── Manual odds comparator (backup fallback) ──────────────
+const manualEls = {
+  home: () => $("#manualHome"), away: () => $("#manualAway"),
+  refH: () => $("#refH"), refD: () => $("#refD"), refA: () => $("#refA"),
+  spH: () => $("#spH"), spD: () => $("#spD"), spA: () => $("#spA"),
+  btn: () => $("#manualScanBtn"), result: () => $("#manualResult"),
+};
+if (manualEls.btn()) {
+  manualEls.btn().addEventListener("click", async () => {
+    const home = manualEls.home()?.value?.trim();
+    const away = manualEls.away()?.value?.trim();
+    const refH = Number(manualEls.refH()?.value);
+    const refD = Number(manualEls.refD()?.value);
+    const refA = Number(manualEls.refA()?.value);
+    const spH = Number(manualEls.spH()?.value);
+    const spD = Number(manualEls.spD()?.value);
+    const spA = Number(manualEls.spA()?.value);
+    const resEl = manualEls.result();
+    if (!refH || !refD || !refA) { if (resEl) resEl.textContent = "请至少填写国际基准赔率。"; return; }
+    try {
+      const params = new URLSearchParams({ ref_h: refH, ref_d: refD, ref_a: refA });
+      if (spH && spD && spA) { params.set("sp_h", spH); params.set("sp_d", spD); params.set("sp_a", spA); }
+      const resp = await fetch("/api/fair-odds?" + params);
+      const data = await resp.json();
+      if (!data.ok) { if (resEl) resEl.textContent = data.error; return; }
+
+      let result = `真实概率: 主${(data.trueProbability.h*100).toFixed(1)}% 平${(data.trueProbability.d*100).toFixed(1)}% 客${(data.trueProbability.a*100).toFixed(1)}% | 国际抽水 ${data.reference.margin}%`;
+      if (data.sporttery) {
+        const heatEmoji = data.sporttery.overheat === "hot" ? "🔥" : data.sporttery.overheat === "warm" ? "⚠️" : "";
+        result += ` | 体彩抽水 ${data.sporttery.margin}% | 超额抽水 ${data.sporttery.excessVig}% ${heatEmoji}`;
+      }
+      if (!data.validation.valid) result += " ⚡基准赔率异常";
+      if (resEl) { resEl.innerHTML = result; resEl.style.color = data.sporttery?.overheat === "hot" ? "#c00" : "#666"; }
+
+      // If team names provided, also run full scan
+      if (home && away && spH && spD && spA) {
+        const match = { home, away, homeShort: home.slice(0,2), awayShort: away.slice(0,2), hhadGoalLine: 0,
+          pools: { had: [{key:"h",odds:spH},{key:"d",odds:spD},{key:"a",odds:spA}] } };
+        const modelResp = await fetch("/api/v32-model", { method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ match, research:null, controls: currentControls(), drawState:{matchesPlayed:0,draws:0} }) });
+        const { model } = await modelResp.json();
+        const scanResp = await fetch("/api/ttg-scan", { method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ model, match }) });
+        const scan = await scanResp.json();
+        _scannerCache.set("manual", scan);
+        _renderScanCards("manual", scan);
+      }
+    } catch (e) { if (resEl) resEl.textContent = "比对失败: " + e.message; }
+  });
+}
 els.dayPlanDateSelect.addEventListener("change", () => {
   state.dayPlan.date = els.dayPlanDateSelect.value;
   persistState();
@@ -3501,61 +3590,3 @@ async function initializeApp() {
 }
 
 initializeApp();
-
-// ── Collector Dashboard ────────────────────────────────────
-const collectorEls = {
-  bar: () => $("#collectorBar"),
-  dot: () => $("#collectorDot"),
-  text: () => $("#collectorText"),
-  meta: () => $("#collectorMeta"),
-};
-
-let _collectorTimer = null;
-async function pollCollectorStatus() {
-  try {
-    const resp = await fetch("/api/collector-status");
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const s = await resp.json();
-
-    const dot = collectorEls.dot();
-    const text = collectorEls.text();
-    const meta = collectorEls.meta();
-
-    if (!dot || !text) return;
-
-    // API health dot
-    dot.className = "collector-dot";
-    if (s.apiHealth === "200") dot.classList.add("ok");
-    else if (s.apiHealth === "403") dot.classList.add("err");
-    else if (s.apiHealth === "502") dot.classList.add("err");
-    else dot.classList.add("idle");
-
-    // Staleness check (>2h since last sync)
-    const lastSync = s.lastSyncAt ? new Date(s.lastSyncAt) : null;
-    const hoursAgo = lastSync ? (Date.now() - lastSync.getTime()) / 3600000 : 999;
-    const stale = !lastSync || hoursAgo > 2;
-
-    if (!lastSync) {
-      dot.classList.add("idle"); // gray — waiting for first sync
-      text.textContent = "采集器: 等待首次同步...";
-      if (meta) meta.textContent = `API: ${s.apiHealth}`;
-    } else if (stale) {
-      dot.classList.add("warn");
-      text.textContent = `采集器: 上次同步 ${hoursAgo.toFixed(1)}h 前 ⚠️`;
-      if (meta) meta.textContent = `${s.totalRecords} 条 · +${s.lastSyncNewRecords} new`;
-    } else {
-      dot.classList.add("ok");
-      text.textContent = `采集器: ${s.totalRecords} 条记录 · ${hoursAgo.toFixed(1)}h 前同步`;
-      if (meta) meta.textContent = `API: ${s.apiHealth} | +${s.lastSyncNewRecords} new`;
-    }
-  } catch (e) {
-    const dot = collectorEls.dot();
-    if (dot) { dot.className = "collector-dot err"; }
-    const text = collectorEls.text();
-    if (text) textContent = "采集器: 离线";
-  }
-}
-
-// Poll every 30s
-pollCollectorStatus();
-_collectorTimer = setInterval(pollCollectorStatus, 30000);

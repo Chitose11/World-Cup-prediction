@@ -12,67 +12,6 @@ let port = Number(process.env.PORT || 4173);
 let tavilyApiKey = process.env.TAVILY_API_KEY || "";
 let stateFile = process.env.WORKBENCH_STATE_FILE || defaultStateFile();
 
-// ── Collector status tracker ─────────────────────────────────
-const collectorStatus = {
-  lastSyncAt: null,
-  lastSyncNewRecords: 0,
-  totalRecords: 0,
-  apiHealth: "idle",       // idle | 200 | 403 | 502
-  lastError: null,
-  historyDir: join(root, "..", "omega-copula-engine", "history"),
-};
-
-async function updateCollectorDB(data) {
-  const matches = data?.matches || [];
-  if (!matches.length) return;
-
-  // Always update status + write JSON (non-negotiable)
-  collectorStatus.lastSyncAt = new Date().toISOString();
-  collectorStatus.lastSyncNewRecords = matches.length;
-  collectorStatus.totalRecords += matches.length;
-  collectorStatus.apiHealth = "200";
-  collectorStatus.lastError = null;
-
-  // Write JSON (fire-and-forget for speed)
-  try {
-    await mkdir(collectorStatus.historyDir, { recursive: true });
-    const today = new Date().toISOString().slice(0, 10);
-    await writeFile(join(collectorStatus.historyDir, `sporttery-${today}.json`), JSON.stringify(data, null, 2));
-  } catch (e) { collectorStatus.lastError = "JSON write: " + e.message; }
-
-  // Write to SQLite (best-effort, don't block status update)
-  try {
-    const { default: Database } = await import("better-sqlite3");
-    const dbPath = join(root, "..", "omega-copula-engine", "sporttery_history.db");
-    const db = new Database(dbPath);
-    db.pragma("journal_mode = WAL");
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, captured_at TEXT DEFAULT (datetime('now')), match_date TEXT);
-      CREATE TABLE IF NOT EXISTS matches (id INTEGER PRIMARY KEY, snapshot_id INTEGER, match_id INTEGER, match_num TEXT, league TEXT, home TEXT, away TEXT, home_short TEXT, away_short TEXT, match_date TEXT, match_time TEXT, hhad_goal_line REAL, UNIQUE(snapshot_id, match_id));
-      CREATE TABLE IF NOT EXISTS odds (id INTEGER PRIMARY KEY AUTOINCREMENT, match_row_id INTEGER, pool TEXT, outcome_key TEXT, outcome_label TEXT, odds REAL, UNIQUE(match_row_id, pool, outcome_key));
-    `);
-    const insSnapshot = db.prepare("INSERT INTO snapshots (match_date) VALUES (?)");
-    const insMatch = db.prepare("INSERT OR IGNORE INTO matches (snapshot_id, match_id, match_num, league, home, away, home_short, away_short, match_date, match_time, hhad_goal_line) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
-    const insOdds = db.prepare("INSERT OR IGNORE INTO odds (match_row_id, pool, outcome_key, outcome_label, odds) VALUES (?,?,?,?,?)");
-    const snap = insSnapshot.run(new Date().toISOString().slice(0,10));
-    const sid = snap.lastInsertRowid;
-    for (const m of matches) {
-      const pools = m.pools || m;
-      const r = insMatch.run(sid, m.id, m.number, m.league, m.homeShort||m.home, m.awayShort||m.away, m.homeShort, m.awayShort, m.matchDate||m.businessDate, m.matchTime, m.hhadGoalLine||0);
-      const rid = r.lastInsertRowid;
-      if (!rid) continue;
-      for (const poolName of ["had","hhad","ttg","hafu","crs"]) {
-        const items = pools[poolName] || [];
-        for (const item of items) {
-          if (item.odds) insOdds.run(rid, poolName, item.key, item.label||item.key, item.odds);
-        }
-      }
-    }
-    db.close();
-  } catch (e) {
-    collectorStatus.lastError = "SQLite: " + e.message;
-  }
-}
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -1127,21 +1066,9 @@ const server = http.createServer(async (req, res) => {
     try {
       const data = await fetchSporttery(url.searchParams.get("pool"));
       json(res, 200, data);
-      // Auto-archive — unfiltered, all matches including unknown teams
-      updateCollectorDB(data).catch(e => {
-        collectorStatus.lastError = e.message;
-        console.error("[collector] DB write failed:", e.message);
-      });
     } catch (error) {
-      collectorStatus.apiHealth = "502";
-      collectorStatus.lastError = error.message;
       json(res, 502, { ok: false, error: error.message, fetchedAt: new Date().toISOString() });
     }
-    return;
-  }
-
-  if (url.pathname === "/api/collector-status") {
-    json(res, 200, collectorStatus);
     return;
   }
   if (url.pathname === "/api/results") {
@@ -1292,6 +1219,68 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  if (url.pathname === "/api/fair-odds") {
+    // De-vig international odds (Pinnacle/Bet365) → true probability
+    // Then compare against sporttery SP to compute REAL excess vig
+    try {
+      const ref = {
+        h: Number(url.searchParams.get("ref_h") || 0),
+        d: Number(url.searchParams.get("ref_d") || 0),
+        a: Number(url.searchParams.get("ref_a") || 0),
+      };
+      const sp = {
+        h: Number(url.searchParams.get("sp_h") || 0),
+        d: Number(url.searchParams.get("sp_d") || 0),
+        a: Number(url.searchParams.get("sp_a") || 0),
+      };
+      if (!ref.h || !ref.d || !ref.a) { json(res, 400, { ok: false, error: "Missing ref_h/ref_d/ref_a" }); return; }
+
+      // Step 1: De-vig international odds → true probability
+      const refSumInv = 1/ref.h + 1/ref.d + 1/ref.a;
+      const trueProb = { h: (1/ref.h)/refSumInv, d: (1/ref.d)/refSumInv, a: (1/ref.a)/refSumInv };
+      const refMargin = +(refSumInv - 1);
+      const refMarginPct = +(refMargin * 100).toFixed(1);
+
+      // Step 2: Compare sporttery SP against true probability
+      let excessVig = null, overheat = null;
+      if (sp.h && sp.d && sp.a) {
+        const spSumInv = 1/sp.h + 1/sp.d + 1/sp.a;
+        const spMargin = +(spSumInv - 1);
+        excessVig = +(spMargin - refMargin);
+        const excessPct = +(excessVig * 100).toFixed(1);
+
+        // Per-outcome overpricing check
+        const overpricing = {};
+        for (const k of ["h","d","a"]) {
+          const fairSP = +(1 / trueProb[k]).toFixed(2);
+          const actualSP = sp[k];
+          const pctDiff = fairSP > 0 ? +((fairSP - actualSP) / fairSP * 100).toFixed(1) : 0;
+          overpricing[k] = { fairSP, actualSP, pctDiff, overheated: pctDiff > 15 };
+        }
+        const maxOverheat = Math.max(overpricing.h.pctDiff, overpricing.d.pctDiff, overpricing.a.pctDiff);
+        overheat = maxOverheat > 10 ? "warm" : maxOverheat > 5 ? "mild" : "";
+        if (maxOverheat > 15) overheat = "hot";
+
+        json(res, 200, {
+          ok: true,
+          reference: { odds: ref, margin: refMarginPct, source: "international" },
+          trueProbability: { h: +trueProb.h.toFixed(4), d: +trueProb.d.toFixed(4), a: +trueProb.a.toFixed(4) },
+          sporttery: sp.h ? { odds: sp, margin: +((spSumInv-1)*100).toFixed(1), excessVig: excessPct, overheat } : null,
+          overpricing: sp.h ? overpricing : null,
+          validation: { refSumInv: +refSumInv.toFixed(4), valid: Math.abs(refSumInv - 1) < 0.15 },
+        });
+      } else {
+        // Only de-vig, no sporttery comparison
+        json(res, 200, {
+          ok: true,
+          reference: { odds: ref, margin: refMarginPct, source: "international" },
+          trueProbability: { h: +trueProb.h.toFixed(4), d: +trueProb.d.toFixed(4), a: +trueProb.a.toFixed(4) },
+          validation: { refSumInv: +refSumInv.toFixed(4), valid: Math.abs(refSumInv - 1) < 0.15 },
+        });
+      }
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return;
+  }
   if (url.pathname === "/api/state") {
     try {
       if (req.method === "GET") {
@@ -1318,20 +1307,6 @@ export function startServer(options = {}) {
   tavilyApiKey = options.tavilyApiKey ?? tavilyApiKey;
   stateFile = options.stateFile ? normalize(options.stateFile) : stateFile;
 
-  // Restore totalRecords from history directory
-  import("node:fs").then(({ readdirSync, existsSync, readFileSync }) => {
-    try {
-      if (existsSync(collectorStatus.historyDir)) {
-        const files = readdirSync(collectorStatus.historyDir).filter(f => f.endsWith(".json"));
-        for (const f of files) {
-          try {
-            const raw = JSON.parse(readFileSync(join(collectorStatus.historyDir, f), "utf-8"));
-            collectorStatus.totalRecords += (raw.matches?.length || 0);
-          } catch {}
-        }
-      }
-    } catch {}
-  }).catch(() => {});
 
   return new Promise((resolve, reject) => {
     const onError = (error) => {

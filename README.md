@@ -114,7 +114,7 @@ curl "http://localhost:4173/api/sporttery-bssj?mid=2040292"
 ```powershell
 npm run dist
 ```
-产物默认输出到：`dist\World Cup V3.2 Workbench-0.5.0-portable.exe`
+产物默认输出到：`dist\World Cup V3.2 Workbench-0.5.2-portable.exe`
 > 桌面版启动时会分配随机本地端口，避免与已运行的 `4173` 冲突。
 
 ## CLV 分类账使用
@@ -218,6 +218,10 @@ scripts/                     回测和验证脚本
   ├── recover_history.js    历史数据恢复
   ├── fetch_hhad_500.py     500.com 历史让球赔率
   ├── build_club_elo.py     俱乐部 ELO 构建
+  ├── phase2_calibrate.js   V4.0 Phase 2 校准
+  ├── phase2_wc_backtest.js V4.0 Phase 2 世界杯回测
+  ├── phase3_backtest.js    V4.0 Phase 3 完整回测
+  ├── phase3_jingcai.js     V4.0 Phase 3 竞彩集成
   └── selector-v2.js        V2 选择器
 outputs/                     (自动生成) 本地输出日志，勿提交
 dist/                        (自动生成) 打包产物，勿提交

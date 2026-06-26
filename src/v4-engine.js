@@ -251,6 +251,244 @@ const CLUB_ELO_LOOKUP = {
   "马赛": "club_marseille",
   "鸟栖": "club_\u9e1f\u6816",
   "鹿岛鹿角": "club_\u9e7f\u5c9b\u9e7f\u89d2",
+
+  // EN aliases for football-data.co.uk CSV
+  "milan": "club_milan",
+  "werder": "club_werder",
+  "utrecht": "club_utrecht",
+  "udinese": "club_udinese",
+  "atalanta": "club_atalanta",
+  "degerfors": "club_degerfors",
+  "burnley": "club_burnley",
+  "bournemouth": "club_bournemouth",
+  "fiorentina": "club_fiorentina",
+  "kristiansund": "club_kristiansund",
+  "cremonese": "club_cremonese",
+  "chelsea": "club_chelsea",
+  "leeds": "club_leeds",
+  "lillestrom": "club_lillestrom",
+  "liverpool": "club_liverpool",
+  "southampton": "club_southampton",
+  "bologna": "club_bologna",
+  "cagliari": "club_cagliari",
+  "kalmar": "club_kalmar",
+  "casa pia": "club_casa_pia",
+  "oergryte": "club_oergryte",
+  "halmstad": "club_halmstad",
+  "hammarby": "club_hammarby",
+  "inter": "club_inter",
+  "red star": "club_red_star",
+  "elfsborg": "club_elfsborg",
+  "elche": "club_elche",
+  "everton": "club_everton",
+  "elversberg": "club_elversberg",
+  "celta": "club_celta",
+  "sevilla": "club_sevilla",
+  "dortmund": "club_dortmund",
+  "nijmegen": "club_nijmegen",
+  "aalesund": "club_aalesund",
+  "kfum oslo": "club_kfum_oslo",
+  "augsburg": "club_augsburg",
+  "oviedo": "club_oviedo",
+  "osasuna": "club_osasuna",
+  "venezia": "club_venezia",
+  "fulham": "club_fulham",
+  "juventus": "club_juventus",
+  "nice": "club_nice",
+  "valencia": "club_valencia",
+  "barcelona": "club_barcelona",
+  "paris sg": "club_paris_sg",
+  "brentford": "club_brentford",
+  "brann": "club_brann",
+  "braga": "club_braga",
+  "brest": "club_brest",
+  "brommapojkarna": "club_brommapojkarna",
+  "parma": "club_parma",
+  "paderborn": "club_paderborn",
+  "freiburg": "club_freiburg",
+  "lazio": "club_lazio",
+  "bayern": "club_bayern",
+  "monaco": "club_monaco",
+  "stuttgart": "club_stuttgart",
+  "strasbourg": "club_strasbourg",
+  "start": "club_start",
+  "man city": "club_man_city",
+  "man united": "club_man_united",
+  "lens": "club_lens",
+  "benfica": "club_benfica",
+  "duesseldorf": "club_duesseldorf",
+  "union berlin": "club_union_berlin",
+  "groningen": "club_groningen",
+  "sunderland": "club_sunderland",
+  "sandefjord": "club_sandefjord",
+  "auxerre": "club_auxerre",
+  "villarreal": "club_villarreal",
+  "pisa": "club_pisa",
+  "crystal palace": "club_crystal_palace",
+  "hamburg": "club_hamburg",
+  "hannover": "club_hannover",
+  "wolfsburg": "club_wolfsburg",
+  "frankfurt": "club_frankfurt",
+  "famalicao": "club_famalicao",
+  "porto": "club_porto",
+  "heidenheim": "club_heidenheim",
+  "tottenham": "club_tottenham",
+  "genoa": "club_genoa",
+  "tromso": "club_tromso",
+  "wolves": "club_wolves",
+  "valerenga": "club_valerenga",
+  "sociedad": "club_sociedad",
+  "real madrid": "club_real_madrid",
+  "gais": "club_gais",
+  "como": "club_como",
+  "koeln": "club_koeln",
+  "middlesbrough": "club_middlesbrough",
+  "aik": "club_aik",
+  "newcastle": "club_newcastle",
+  "viking": "club_viking",
+  "aston villa": "club_aston_villa",
+  "verona": "club_verona",
+  "rodez": "club_rodez",
+  "rosenborg": "club_rosenborg",
+  "roma": "club_roma",
+  "mainz": "club_mainz",
+  "fredrikstad": "club_fredrikstad",
+  "molde": "club_molde",
+  "levante": "club_levante",
+  "lecce": "club_lecce",
+  "fuerth": "club_fuerth",
+  "sarpsborg": "club_sarpsborg",
+  "sassuolo": "club_sassuolo",
+  "nacional": "club_nacional",
+  "west ham": "club_west_ham",
+  "betis": "club_betis",
+  "feyenoord": "club_feyenoord",
+  "getafe": "club_getafe",
+  "haecken": "club_haecken",
+  "girona": "club_girona",
+  "darmstadt": "club_darmstadt",
+  "napoli": "club_napoli",
+  "torino": "club_torino",
+  "lille": "club_lille",
+  "lyon": "club_lyon",
+  "alaves": "club_alaves",
+  "arsenal": "club_arsenal",
+  "annecy": "club_annecy",
+  "ajax": "club_ajax",
+  "hoffenheim": "club_hoffenheim",
+  "mallorca": "club_mallorca",
+  "atletico": "club_atletico",
+  "marseille": "club_marseille",
+  "tps  ": "club_tps__",
+  "ac  ": "club_ac__",
+  "弗拉门戈": "club_弗拉门戈",
+  "帕梅拉斯": "club_帕梅拉斯",
+  "科林蒂安": "club_科林蒂安",
+  "圣保罗": "club_圣保罗",
+  "桑托斯": "club_桑托斯",
+  "拉普大学": "club_拉普大学",
+  "拉努斯": "club_拉努斯",
+  "罗萨里奥": "club_罗萨里奥",
+  "萨斯菲": "club_萨斯菲",
+  "纽维尔": "club_纽维尔",
+  "阿根廷青年": "club_阿根廷青年",
+  "科尔多瓦": "club_科尔多瓦",
+  "利雅胜利": "club_利雅胜利",
+  "利雅新月": "club_利雅新月",
+  "吉达联合": "club_吉达联合",
+  "吉达国民": "club_吉达国民",
+  "达马克": "club_达马克",
+  "布赖合作": "club_布赖合作",
+  "迈季宽广": "club_迈季宽广",
+  "新未来sc": "club_新未来sc",
+  "利雅青年": "club_利雅青年",
+  "达曼协定": "club_达曼协定",
+  "胡巴卡德": "club_胡巴卡德",
+  "拉斯决心": "club_拉斯决心",
+  "蔚山现代": "club_蔚山现代",
+  "全北现代": "club_全北现代",
+  "首尔fc": "club_首尔fc",
+  "浦项制铁": "club_浦项制铁",
+  "光州fc": "club_光州fc",
+  "仁川联": "club_仁川联",
+  "富川fc": "club_富川fc",
+  "神户胜利": "club_神户胜利",
+  "川崎前锋": "club_川崎前锋",
+  "横滨水手": "club_横滨水手",
+  "浦和红钻": "club_浦和红钻",
+  "鹿岛鹿角": "club_鹿岛鹿角",
+  "名古屋鲸": "club_名古屋鲸",
+  "广岛三箭": "club_广岛三箭",
+  "大阪钢巴": "club_大阪钢巴",
+  "清水鼓动": "club_清水鼓动",
+  "柏太阳神": "club_柏太阳神",
+  "东京绿茵": "club_东京绿茵",
+  "千叶市原": "club_千叶市原",
+  "町田泽维": "club_町田泽维",
+  "冈山绿雉": "club_冈山绿雉",
+  "水户蜀葵": "club_水户蜀葵",
+  "东京fc": "club_东京fc",
+  "大阪樱花": "club_大阪樱花",
+  "赫尔辛基": "club_赫尔辛基",
+  "库奥皮奥": "club_库奥皮奥",
+  "塞伊奈": "club_塞伊奈",
+  "国际图尔": "club_国际图尔",
+  "玛丽港": "club_玛丽港",
+  "坦山猫": "club_坦山猫",
+  "拉赫蒂": "club_拉赫蒂",
+  "马尔默": "club_马尔默",
+  "天狼星": "club_天狼星",
+  "埃夫斯堡": "club_埃夫斯堡",
+  "哥德堡": "club_哥德堡",
+  "韦斯特罗": "club_韦斯特罗",
+  "米亚尔比": "club_米亚尔比",
+  "博德闪耀": "club_博德闪耀",
+  "海于格松": "club_海于格松",
+  "哥伦布": "club_哥伦布",
+  "波特兰": "club_波特兰",
+  "盐湖城": "club_盐湖城",
+  "纳什维尔": "club_纳什维尔",
+  "蒙特利尔": "club_蒙特利尔",
+  "夏洛特fc": "club_夏洛特fc",
+  "辛辛那提": "club_辛辛那提",
+  "西雅图": "club_西雅图",
+  "多伦多": "club_多伦多",
+  "明尼苏达": "club_明尼苏达",
+  "圣何塞": "club_圣何塞",
+  "华盛顿": "club_华盛顿",
+  "新英格兰": "club_新英格兰",
+  "洛杉矶fc": "club_洛杉矶fc",
+  "亚特联": "club_亚特联",
+  "奥兰多": "club_奥兰多",
+  "达拉斯": "club_达拉斯",
+  "休斯顿": "club_休斯顿",
+  "堪萨斯": "club_堪萨斯",
+  "芝加哥": "club_芝加哥",
+  "温哥华": "club_温哥华",
+  "科罗拉": "club_科罗拉",
+  "奥斯汀": "club_奥斯汀",
+  "波特诺": "club_波特诺",
+  "亚自由": "club_亚自由",
+  "德尔瓦耶": "club_德尔瓦耶",
+  "基多体大": "club_基多体大",
+  "科金博联": "club_科金博联",
+  "天主大学": "club_天主大学",
+  "水晶体育": "club_水晶体育",
+  "大学体育": "club_大学体育",
+  "佩纳罗尔": "club_佩纳罗尔",
+  "巴兰基亚": "club_巴兰基亚",
+  "托利马": "club_托利马",
+  "圣菲独立": "club_圣菲独立",
+  "米拉索尔": "club_米拉索尔",
+  "时刻准备": "club_时刻准备",
+  "中央大学": "club_中央大学",
+  "玻利瓦尔": "club_玻利瓦尔",
+  "里独立": "club_里独立",
+  "索菲亚": "club_索菲亚",
+  "贝尔格莱德": "club_贝尔格莱德",
+  "brighton": "club_brighton",
+  "nott'm forest": "club_nottm_forest",
+  "nottingham forest": "club_nottm_forest",
 };
 
 const TEAM_DATA = {
@@ -581,6 +819,8 @@ const ATHLETIC_RESISTANCE = new Set(["dr congo", "congo dr", "senegal", "ivory c
 const TACTICAL_RESISTANCE = new Set(["morocco", "croatia", "egypt", "japan"]);
 const AGING_DEFENSE_TEAMS = new Set(["croatia"]);
 
+
+  // Phase 2: missing PL teams
 const GROUP_DATA = {
   "mexico": { group: "A", first: 0.478, second: 0.25, third: 0.092, qualify: 0.82 },
   "korea": { group: "A", first: 0.22, second: 0.30, third: 0.15, qualify: 0.67 },
@@ -844,7 +1084,8 @@ export function buildFullV32Model({ match = {}, research = null, controls = {}, 
   const p0 = buildP0({ home, away, market, sij, signals });
   const correction = buildCorrections({ p0, sij, home, away, signals, controls, drawState });
   const profile = chooseProfile({ controls, home, away, p0, signals });
-  const lambdas = chooseLambdas({ sij, p0, controls, signals, motivMod, profileName: profile });
+  const deltaElo = (home.elo || 1700) - (away.elo || 1700);
+  const lambdas = chooseLambdas({ sij, p0, controls, signals, motivMod, profileName: profile, deltaElo });
   const tempo = chooseTempo({ controls, signals });
   const tempoFactor = tempo === "slow" ? 0.9 : tempo === "open" ? 1.08 : 1;
   // V4.0: compute dispersion from archetypes + stage
@@ -868,9 +1109,17 @@ export function buildFullV32Model({ match = {}, research = null, controls = {}, 
     }
   }
 
+  // V4.0: Dynamic Copula ρ — decreases when Elo gap is large
+  // Strong teams don't need "coupling" to weak teams; ρ → 0 for mismatches
+  const dynCopulaRho = Math.abs(deltaElo) > 300 ? 0.06
+    : Math.abs(deltaElo) > 200 ? 0.10
+    : Math.abs(deltaElo) > 100 ? 0.14
+    : 0.18;
+  // DC: knockout 0.12 (amplify 0-0/1-1), group 0.03 (catch matchday-3 collusion draws)
+  const dcRho = matchStage === "knockout" ? 0.12 : 0.03;
   const scores = buildScoreMatrix(
     lambdas.home * tempoFactor, lambdas.away * tempoFactor, profile,
-    { r: dispR, rho: 0.012 }
+    { r: dispR, rho: dcRho, copulaRho: dynCopulaRho, dcRho }
   );
   const states = sumStates(scores);
   const byPlay = buildPlayProbabilities(scores, match, profile, tempoFactor, lambdas, signals, dispR);
@@ -1208,7 +1457,7 @@ function extractSignals(text, homeKey, awayKey, market, stageMul = STAGE_MULTIPL
   return {
     lowBlock: has("low block", "deep block", "defensive", "compact", "5-4-1", "4-5-1", "低位", "密集"),
     eliteOutlet: has("ronaldo", "bruno", "bernardo", "mbappe", "messi", "kane", "elite", "finisher", "attacking", "attack"),
-    injury: has("injury", "injuries", "suspended", "suspension", "doubtful", "unavailable", "out injured", "伤停", "停赛"),
+    injury: false, // disabled — bssj API provides structured injury data; regex false-positives from search prompts
     rotation: has("rotation", "rotate", "rest", "rotated", "轮换"),
     slowEnvironment: has("heat", "humid", "humidity", "hydration", "altitude", "travel", "fatigue", "hot", "高温", "湿度", "海拔", "旅行", "疲劳"),
     openTempo: has("open game", "counterattack", "transition", "high press", "pressing", "pace", "end-to-end", "counter", "对攻", "反击", "高压", "转换"),
@@ -1441,7 +1690,7 @@ function buildCorrections({ p0, sij, signals, controls, drawState }) {
     consistencyWarning: lambdaWarnings.join(" "),
   };
 }
-function chooseLambdas({ sij, p0, controls, signals, motivMod = MOTIVATION_MODIFIERS.neutral, profileName = "default" }) {
+function chooseLambdas({ sij, p0, controls, signals, motivMod = MOTIVATION_MODIFIERS.neutral, profileName = "default", deltaElo = 0 }) {
   let result;
   if (Number.isFinite(Number(controls?.lambdaHome)) && Number.isFinite(Number(controls?.lambdaAway))) {
     result = { home: Number(controls.lambdaHome), away: Number(controls.lambdaAway) };
@@ -1463,6 +1712,20 @@ function chooseLambdas({ sij, p0, controls, signals, motivMod = MOTIVATION_MODIF
   // if (Math.abs(sij) > 0.8) console.error('CHOOSE_LAMBDAS_DEBUG sij='+sij.toFixed(2)+' fav='+fav.toFixed(2)+' dog='+dog.toFixed(2)+' resultBefore='+JSON.stringify(result));
   result = applyV33LambdaAdjustments(result, signals);
   // if (Math.abs(sij) > 0.8) console.error('CHOOSE_LAMBDAS_DEBUG afterAdjust='+JSON.stringify(result));
+
+  // V4.0 Non-linear Elo Stretch — fix Favorite-Longshot Bias
+  // When ΔElo > 200: amplify fav λ exponentially, crush dog λ
+  // This fixes Arsenal-vs-Palace type mismatches where model gives 48% instead of 62%
+  const absDeltaElo = Math.abs(deltaElo ?? 0);
+  if (absDeltaElo > 200) {
+    const excess = (absDeltaElo - 200) / 100;
+    const stretch = Math.min(1 + excess * 0.08, 1.40); // 8% per 100 Elo, max 40%
+    const favKey = signals.favoriteSide === "a" ? "away" : "home";
+    const dogKey = favKey === "home" ? "away" : "home";
+    result[favKey] = clamp(result[favKey] * stretch, 0.2, 3.4);
+    result[dogKey] = clamp(result[dogKey] / stretch, 0.2, 3.4);
+  }
+
   // P9: motivation-driven λ scaling
   result = {
     home: clamp(result.home * (motivMod?.lambdaScale ?? 1), 0.2, 3.4),
@@ -1621,8 +1884,10 @@ function buildScoreMatrix(lambdaHome, lambdaAway, profileName, opts = {}) {
     for (let a = 0; a <= maxG; a++)
       scores.push({ h, a, prob: counts[h][a] / total });
 
-  // Phase 3: Dixon-Coles low-score patch on Copula joint
-  applyDixonColes(scores, rho);
+  // Phase 3: Dixon-Coles — re-enabled for knockout stages
+  if (opts.dcRho !== 0) {
+    applyDixonColes(scores, opts.dcRho ?? 0.012);
+  }
   return scores;
 }
 
@@ -1697,59 +1962,18 @@ function buildPlayProbabilities(scores, match, profile, tempoFactor, lambdas, si
 }
 
 function adjustHafuV33(hafu, signals) {
-  const winWin = signals.favoriteSide === "a" ? "aa" : "hh";
-  const drawWin = signals.favoriteSide === "a" ? "da" : "dh";
-  const winDraw = signals.favoriteSide === "a" ? "ad" : "hd";
-  const adjusted = { ...hafu };
-  if (signals.lowBlockConversionPenalty) {
-    adjusted[winWin] *= 0.62;
-    adjusted[drawWin] += 0.16;
-    adjusted.dd += 0.10;
-    adjusted[winDraw] += 0.02;
-  } else if (signals.unstableFavorite) {
-    adjusted[winWin] *= 0.78;
-    adjusted[drawWin] += 0.08;
-    adjusted.dd += 0.055;
-  }
-  if (signals.secondHalfSurgeFactor) {
-    adjusted[drawWin] += 0.17;
-    adjusted[winWin] += 0.03;
-    adjusted.dd -= 0.08;
-  }
-  return normalizeMap(adjusted);
+  // V4: NB+Copula joint already handles HT/FT distribution — bypass all V3 heuristics
+  return { ...hafu };
 }
 
 function adjustHandicapV33(hhad, handicap, states, signals) {
-  const coverKey = signals.favoriteSide === "a" ? "a" : "h";
-  const oppositeKey = coverKey === "h" ? "a" : "h";
-  const favoriteWin = signals.favoriteSide === "a" ? states.a : states.h;
-  const deepHandicap = coverKey === "h" ? handicap <= -2 : handicap >= 2;
-  const adjusted = { ...hhad };
-  if ((signals.lowBlockConversionPenalty || signals.unstableFavorite) && (deepHandicap || favoriteWin < 0.70 || states.d > 0.24)) {
-    const removed = adjusted[coverKey] * (deepHandicap ? 0.30 : 0.18);
-    adjusted[coverKey] -= removed;
-    adjusted.d += removed * 0.45;
-    adjusted[oppositeKey] += removed * 0.55;
-  }
-  if (signals.secondHalfSurgeFactor) {
-    const boost = Math.min(0.05, adjusted[oppositeKey] * 0.35);
-    adjusted[coverKey] += boost;
-    adjusted[oppositeKey] -= boost;
-  }
-  return normalizeMap(adjusted);
+  // V4: NB+Copula joint already handles handicap distribution — bypass all V3 heuristics
+  return { ...hhad };
 }
 
 function adjustTotalGoalsV33(ttg, signals) {
-  const adjusted = { ...ttg };
-  if (signals.lowBlockConversionPenalty || signals.unstableFavorite) {
-    for (const key of ["s0", "s1", "s2"]) adjusted[key] = (adjusted[key] || 0) * 1.06;
-    for (const key of ["s3", "s4", "s5", "s6", "s7"]) adjusted[key] = (adjusted[key] || 0) * 0.95;
-  }
-  if (signals.secondHalfSurgeFactor) {
-    for (const key of ["s0", "s1", "s2"]) adjusted[key] = (adjusted[key] || 0) * 0.94;
-    for (const key of ["s3", "s4", "s5", "s6", "s7"]) adjusted[key] = (adjusted[key] || 0) * 1.08;
-  }
-  return normalizeMap(adjusted);
+  // V4: NB+Copula joint already handles goal distribution — bypass all V3 heuristics
+  return { ...ttg };
 }
 
 function normalizeMap(map) {
@@ -1876,7 +2100,7 @@ function getDispersion(homeTeam, awayTeam, stage) {
   const cH = DISPERSION_BY_CONFED[homeTeam?.confed] || DISPERSION_BY_CONFED.default;
   const cA = DISPERSION_BY_CONFED[awayTeam?.confed] || DISPERSION_BY_CONFED.default;
   const sMul = DISPERSION_BY_STAGE[stage] || DISPERSION_BY_STAGE.group;
-  return Math.max(0.2, Math.min(3.0, (hR + aR + cH + cA) / 4 * sMul));
+  return Math.max(0.2, Math.min(30.0, (hR + aR + cH + cA) / 4 * sMul));
 }
 
 // V4.0 core PMF: Negative Binomial — iterative recurrence (no factorial overflow)
