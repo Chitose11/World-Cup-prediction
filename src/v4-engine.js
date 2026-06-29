@@ -1391,8 +1391,15 @@ function parseResearchPenalty(research) {
   ];
 
   for (const { regex, team, action, value } of patterns) {
+    // 🔪 SURGERY-3: 否定词盲区修补
+    // 旧正则：无论前面写的是"暂无伤停"还是"没有缺阵"，只要包含"伤停"二字就命中
+    // 新逻辑：匹配后检查前文 3 字符内是否存在否定词，存在则跳过
     if (regex.test(allText)) {
-      penalties.push({ team, action, value, reason: `${team} team: ${action}` });
+      const matchIndex = allText.search(regex);
+      const prefix = allText.substring(Math.max(0, matchIndex - 3), matchIndex);
+      if (!/无|没|不|暂无/.test(prefix)) {
+        penalties.push({ team, action, value, reason: `${team} team: ${action}` });
+      }
     }
   }
 
@@ -1756,15 +1763,12 @@ function applyV33LambdaAdjustments(lambdas, signals) {
     favTacticalMult *= 1 - 0.04 * unstableScale;
     dogTacticalMult *= 1 + 0.02 * unstableScale;
   }
-  if (signals.lowBlockPenaltyScore > 0.15) {
-    const effective = signals.lowBlockPenaltyScore * signals.opponentGrade;
-    favTacticalMult *= 1 - 0.08 * effective;
-    dogTacticalMult *= 1 + 0.08 * effective;
-  }
-  if (signals.researchPenalty && typeof signals.researchPenalty.favoriteModifier === 'number') {
-    favTacticalMult *= signals.researchPenalty.favoriteModifier;
-    dogTacticalMult *= signals.researchPenalty.underdogModifier;
-  }
+  // 🔪 SURGERY-1: 切除文本情报对数学引擎的污染
+  // 理由：Pinnacle 赔率已 Price-in 伤停/战术意图，文本解析存在否定词盲区
+  // 二次惩罚 = 双重计数 → 强队 λ 被系统性低估
+  // 保留客观交互矩阵（行 1748-1758）和 unstableFavorite 分类修正
+  // if (signals.lowBlockPenaltyScore > 0.15) { ... }  ← 文本驱动，已切除
+  // if (signals.researchPenalty ... ) { ... }          ← 文本驱动，已切除
   // Floor: favorite λ cannot drop below 85% of base — prevents cascade collapse
   favTacticalMult = Math.max(0.85, favTacticalMult);
 
@@ -2090,8 +2094,17 @@ const DISPERSION_BY_CONFED = {
   "UEFA": 14, "CONMEBOL": 12, "CONCACAF": 9,
   "AFC": 9, "CAF": 7, "OFC": 6, "default": 10,
 };
+// 🔪 SURGERY-2: 补全淘汰赛方差枚举，与 STAGE_MULTIPLIERS 键值对齐
+// 旧版只有 3 key → quarter/semi/round_of_16 全部 fallback 到 group=1.0
+// 结果：淘汰赛防爆冷增幅系数在底层核心计算中一直失效
 const DISPERSION_BY_STAGE = {
-  "group": 1.0, "knockout": 0.7, "final": 0.6,
+  "group": 1.0,
+  "round_of_32": 0.80,
+  "round_of_16": 0.70,
+  "quarter": 0.70,
+  "semi": 0.65,
+  "final": 0.60,
+  "knockout": 0.70, // 保留旧键值防崩
 };
 
 function getDispersion(homeTeam, awayTeam, stage) {

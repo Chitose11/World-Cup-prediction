@@ -605,105 +605,47 @@ function inferAutoSettings(match, research) {
   let profile = els.profileSelect.value;
   let tempo = "normal";
 
+  // 🔪 SURGERY-F1: V4 修正 — 切除文本驱动 λ 篡改
+  // 策略：λ 值保持当前滑块值不变（由后端 Pinnacle 去水固化），
+  // 只根据概率分布和 V3.3 分类调整 profile/tempo 定性标签
+  // 所有 hasAny(text, ...) 对 lambda 的乘法操作已全部切除
+
   if (favProb > 0.72) {
-    lambdaHome = homeFav ? 2.3 : 0.45;
-    lambdaAway = homeFav ? 0.45 : 2.3;
     profile = "defensive-favorite";
-    reasons.push("赔率显示明显强弱差，按 V3.2 clear/huge mismatch 档位重估 λ。");
+    reasons.push("V4 校验：强弱差距明显，预设为 defensive-favorite 防守热门画像。");
   } else if (favProb > 0.6) {
-    lambdaHome = homeFav ? 1.85 : 0.65;
-    lambdaAway = homeFav ? 0.65 : 1.85;
     profile = "default";
-    reasons.push("赔率显示热门优势，按 V3.2 favorite advantage 档位重估 λ。");
   } else if (favProb > 0.5 || drawProb > 0.28) {
-    lambdaHome = homeFav ? 1.3 : 1.0;
-    lambdaAway = homeFav ? 1.0 : 1.3;
     profile = "balanced";
-    reasons.push("赔率分布接近中档热门或小优势，降低单边判断强度。");
+    reasons.push("V4 校验：赔率分布接近均衡，预设为 balanced 互有攻守画像。");
   }
 
-  if (hasAny(text, ["low block", "deep block", "defensive", "5-4-1", "4-5-1", "compact", "防守", "低位", "密集"])) {
-    profile = "defensive-favorite";
-    if (homeFav) lambdaHome *= 0.95;
-    else lambdaAway *= 0.95;
-    reasons.push("情报出现低位/密集防守信号，切换为热门破低位画像。");
-  }
-
-  if (hasAny(text, ["ronaldo", "bruno fernandes", "mbappe", "kane", "messi", "elite", "finisher", "attacking", "attack", "进攻", "终结"])) {
-    if (favProb > 0.55) {
-      profile = "elite-finisher";
-      if (homeFav) lambdaHome *= 1.06;
-      else lambdaAway *= 1.06;
-      reasons.push("情报/阵容出现强终结点或进攻核心，提升 collapse 尾部。");
-    }
-  }
-
-  if (hasAny(text, ["injury", "injuries", "suspended", "suspension", "doubtful", "unavailable", "out injured", "缺阵", "伤停", "停赛"])) {
-    if (homeFav) lambdaHome *= 0.96;
-    else lambdaAway *= 0.96;
-    reasons.push("情报包含伤停/停赛词，热门进攻 λ 小幅保守。");
-  }
-
-  if (hasAny(text, ["rotation", "rotate", "rest", "rotated", "轮换", "休息"])) {
-    if (homeFav) lambdaHome *= 0.94;
-    else lambdaAway *= 0.94;
-    reasons.push("情报出现轮换/休息信号，降低热门确定性。");
-  }
-
-  if (hasAny(text, ["heat", "humid", "humidity", "hydration", "altitude", "travel", "fatigue", "hot", "高温", "湿度", "海拔", "旅行", "疲劳"])) {
-    tempo = "slow";
-    lambdaHome *= 0.94;
-    lambdaAway *= 0.94;
-    reasons.push("情报出现高温/湿度/海拔/旅行疲劳，自动降为慢节奏。");
-  }
-
-  if (hasAny(text, ["open game", "counterattack", "transition", "high press", "pressing", "pace", "end-to-end", "对攻", "反击", "高压", "转换"])) {
-    tempo = "open";
-    lambdaHome *= 1.05;
-    lambdaAway *= 1.05;
-    reasons.push("情报出现转换/高压/对攻信号，自动升为开放节奏。");
-  }
-
+  // 类别覆盖（仅改 profile，不动 λ）
   if (v33.unstableFavorite) {
     profile = "defensive-favorite";
-    if (homeFav) {
-      lambdaHome *= 0.96;
-      lambdaAway *= 1.02;
-    } else {
-      lambdaAway *= 0.96;
-      lambdaHome *= 1.02;
-    }
-    reasons.push(`V3.3：热门归类为${v33.favoriteClass}，胜率降档并加强防平。`);
+    reasons.push(`V4 校验：热门球队归类为 ${v33.favoriteClass}，画像切为防平。`);
   }
-
   if (v33.lowBlockConversionPenalty) {
     profile = "defensive-favorite";
-    tempo = tempo === "open" ? "normal" : tempo;
-    if (homeFav) {
-      lambdaHome *= 0.92;
-      lambdaAway *= 1.08;
-    } else {
-      lambdaAway *= 0.92;
-      lambdaHome *= 1.08;
-    }
-    reasons.push("V3.3：触发低位兑现惩罚，平局/受让和弱队进球上调。");
+    reasons.push("V4 校验：弱队具有体格/战术抵抗力，可能形成密集防守。");
   }
-
   if (v33.secondHalfSurgeFactor) {
     profile = "elite-finisher";
+    reasons.push("V4 校验：强队深度足够，具有下半场增压潜力。");
+  }
+
+  // 环境节奏覆盖（只设 tempo，不动 λ）
+  if (hasAny(text, ["heat", "humid", "humidity", "hydration", "altitude", "travel", "fatigue", "hot", "高温", "湿度", "海拔", "旅行", "疲劳"])) {
+    tempo = "slow";
+    reasons.push("环境因子：检测到高温或高海拔，预设慢节奏。");
+  }
+  if (hasAny(text, ["open game", "counterattack", "transition", "high press", "pressing", "pace", "end-to-end", "对攻", "反击", "高压", "转换"])) {
     tempo = "open";
-    if (homeFav) {
-      lambdaHome *= 1.08;
-      lambdaAway *= 1.03;
-    } else {
-      lambdaAway *= 1.08;
-      lambdaHome *= 1.03;
-    }
-    reasons.push("V3.3：触发下半场增压因子，平胜/胜胜、让胜和3+进球尾部上调。");
+    reasons.push("战术倾向：检测到开放对攻或高压转换，预设快节奏。");
   }
 
   if (!reasons.length) {
-    reasons.push("未抓到强情境修正词，保留赔率去水后的基础自动判断。");
+    reasons.push("V4 引擎：基础参数已由 Pinnacle 公平赔率锁定，等待核心交叉校准。");
   }
 
   const confidence = (research?.coverage?.signalCount || 0) >= 3 ? "高" : (research?.coverage?.categoryHits || 0) >= 3 ? "中" : "低";
@@ -830,7 +772,7 @@ function renderAutoJudge(match) {
   const auto = selectedAutoJudge();
   const research = selectedResearch();
   if (!match) {
-    els.autoJudgeBox.innerHTML = "联网搜索后自动判断期望进球、比赛画像和环境节奏。";
+    els.autoJudgeBox.innerHTML = "V4 引擎通过国际公平赔率去水初始化参数，情报仅作为环境参考。";
     return;
   }
   if (!research) {
@@ -860,7 +802,7 @@ function renderAutoJudge(match) {
   }[auto.tempo] || auto.tempo;
   els.autoJudgeBox.innerHTML = `
     <div class="auto-title">自动判断：${profileName} · ${tempoName} · 置信度${auto.confidence}</div>
-    <div class="auto-meta">λ 主 ${auto.lambdaHome.toFixed(2)} / 客 ${auto.lambdaAway.toFixed(2)}，由赔率去水 + ${sourceLabel(research.source)} 情报自动设置。</div>
+    <div class="auto-meta">λ 已由平博公平赔率去水固化；右侧情报仅作为人类校验参考，不再干涉底层数学期望。</div>
     <div class="auto-reasons">${auto.reasons.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
   `;
 }
@@ -2071,9 +2013,9 @@ function renderModelMeta(model) {
     `;
   }
   const isV33 = String(meta.source || "").includes("v33-");
-  const sourceLabelText = isV33 ? "V3.3 r6 (λ乘数驱动)" : "Skill 完整版导入";
+  const sourceLabelText = isV33 ? "V4.0 (Pinnacle 校准)" : "Skill 完整版导入";
   const bodyText = isV33
-    ? "r6: λ乘数交互矩阵 + Sij经验混合 + 熔断保护 + Danger Zone选择器风控。比分矩阵/让球/总进球/半全场均由泊松λ统一衍生，不再pp对齐。"
+    ? "V4 核心：负二项厚尾 + Copula 相依 + Dixon-Coles 低分修正 + Pinnacle 市场校准。自然语言情报已降级为人类参考，阻断二次投毒。"
     : "已接入 V3.2 references/scripts：P0 ensemble、Elo/FIFA/PDF 基线、小组出线先验、贝叶斯平局修正、Tavily 动态情报和三状态比分矩阵。";
   const notes = (meta.notes || []).slice(0, 4)
     .map((note) => `<li>${escapeHtml(note)}</li>`)
