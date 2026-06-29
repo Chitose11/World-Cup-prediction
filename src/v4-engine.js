@@ -1116,7 +1116,10 @@ export function buildFullV32Model({ match = {}, research = null, controls = {}, 
     : Math.abs(deltaElo) > 100 ? 0.14
     : 0.18;
   // DC: knockout 0.12 (amplify 0-0/1-1), group 0.03 (catch matchday-3 collusion draws)
-  const dcRho = matchStage === "knockout" ? 0.12 : 0.03;
+  // Dixon-Coles low-score correction: knockout stages amplify 0-0/1-1/1-0/0-1
+  // non-group = quarter/semi/final/round_of_16/round_of_32 → ρ=0.12
+  // group = ρ=0.03 (catch matchday-3 collusion draws without overfitting)
+  const dcRho = matchStage !== "group" ? 0.12 : 0.03;
   const scores = buildScoreMatrix(
     lambdas.home * tempoFactor, lambdas.away * tempoFactor, profile,
     { r: dispR, rho: dcRho, copulaRho: dynCopulaRho, dcRho }
