@@ -48,7 +48,7 @@ const els = {
   simulationView: $("#simulationView"),
   poolSelect: $("#poolSelect"),
   syncBtn: $("#syncBtn"),
-  stageSelect: $("#stageSelect"),
+  // stageSelect removed — V4 uses auto-inference only
   statusLine: $("#statusLine"),
   matchSearch: $("#matchSearch"),
   matchList: $("#matchList"),
@@ -2203,12 +2203,14 @@ function sourceLabel(source = "") {
 }
 
 function currentControls() {
+  const match = selectedMatch();
   return {
     lambdaHome: Number(els.lambdaHome.value),
     lambdaAway: Number(els.lambdaAway.value),
     profile: els.profileSelect.value,
     tempo: els.tempoSelect.value,
-    matchStage: (els.stageSelect?.value) || "group",
+    // V4: 强制自动推断赛制，无比赛则兜底 group
+    matchStage: match ? inferMatchStage(match) : "group",
     confidence: selectedAutoJudge()?.confidence || selectedResearch()?.coverage?.label || "",
   };
 }
@@ -2291,6 +2293,16 @@ function estimatedControlsForMatch(match) {
 
 // ===== P8: Infer match stage from match metadata =====
 function inferMatchStage(match) {
+  // ═══ V4 API 雷达探针 — 检查体彩接口返回的赛制字段 ═══
+  console.log("【V4 API雷达】赛制字段:", {
+    队名: `${match.homeTeam || match.home || "?"} vs ${match.awayTeam || match.away || "?"}`,
+    league: match.league,
+    round: match.round,
+    stage: match.stage,
+    matchNumStr: match.matchNumStr,
+  });
+  // ═══ 探针结束 ═══
+
   const league = (match.league || "").toLowerCase();
   const round = (match.round || match.stage || "").toLowerCase();
   // Explicit round hints
@@ -3245,7 +3257,7 @@ els.lambdaHome.addEventListener("input", handleControlChange);
 els.lambdaAway.addEventListener("input", handleControlChange);
 els.profileSelect.addEventListener("change", handleControlChange);
 els.tempoSelect.addEventListener("change", handleControlChange);
-if (els.stageSelect) els.stageSelect.addEventListener("change", handleControlChange);
+// stageSelect removed in V4 — stage auto-inferred from match data
 function getBestModelForMatch(match) {
   if (!match) return null;
   const cached = state.fullModelByMatch[match.id];
