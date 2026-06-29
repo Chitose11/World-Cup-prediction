@@ -113,6 +113,23 @@
         </section>
 
         <aside class="decision-pane">
+          <!-- V4 交易铁律警示面板 -->
+          <section class="decision-section" style="margin-bottom:10px">
+            <div class="section-head">
+              <h2 style="color:var(--danger);display:flex;align-items:center;gap:6px;font-size:13px">
+                <span style="font-size:15px">⚠️</span> V4 交易铁律 (死锁协议)
+              </h2>
+            </div>
+            <div class="grade-card" style="border-left:4px solid var(--danger);background:rgba(248,81,73,0.08);padding:10px 14px">
+              <ul style="margin:0;padding-left:16px;color:var(--ink-strong);font-size:12px;line-height:1.6">
+                <li><strong>仓位红线：</strong>单场最大下注 ≤ 总本金 <strong style="color:var(--danger)">5%</strong> (Kelly熔断)</li>
+                <li><strong>避险原则：</strong>只做国际杯赛，负 EV 强制空仓，拒绝体彩 25% 抽水</li>
+                <li><strong>禁低赔串：</strong>严禁碰 1.2x 主胜，严禁无脑 2串1/3串1</li>
+                <li><strong>锁定甜区：</strong>耐心等淘汰赛(QF八强)或极度悬殊局的价值洼地</li>
+              </ul>
+            </div>
+          </section>
+
           <section class="decision-section">
             <h2>V4.0 扫描报告</h2>
             <div id="decisionBox" class="decision-box">
@@ -215,7 +232,8 @@
           <div class="sim-actions">
             <label>
               初始预算
-              <input id="simBankrollInput" type="number" min="100" step="100" value="10000" style="width:90px" />
+              <input id="simBankrollInput" type="number" min="100" step="100" value="10000" style="width:110px" />
+              <div style="color:var(--danger);font-size:11px;margin-top:4px">单场极限(5%): <span id="simMaxBetHint">¥500</span></div>
             </label>
             <span id="simBalanceDisplay" class="sim-balance" style="display:none">余额: -</span>
             <button id="simGenerateBtn" type="button" data-icon="+">生成未来预测</button>

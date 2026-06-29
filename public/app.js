@@ -3596,6 +3596,17 @@ els.simulationFuture.addEventListener("click", (event) => {
   if (button) settleSimulation(button.dataset.fillResult);
 });
 
+// ── 5% 仓位铁律：预算变动实时联动 ──
+const maxBetHintEl = document.getElementById("simMaxBetHint");
+if (els.simBankrollInput && maxBetHintEl) {
+  els.simBankrollInput.addEventListener("input", () => {
+    const total = Number(els.simBankrollInput.value) || 0;
+    const maxBet = Math.floor(total * 0.05);
+    maxBetHintEl.textContent = `¥${maxBet}`;
+    maxBetHintEl.style.color = maxBet > 2500 ? "var(--danger)" : "var(--warn)";
+  });
+}
+
 // playTabs removed in V4.0 — HAD/HHAD/TTG shown as scanner cards simultaneously
 async function initializeApp() {
   await hydratePersistentState();
