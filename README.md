@@ -6,9 +6,9 @@
 
 ## 当前版本
 
-- 应用版本：`0.5.2`
-- 模型版本：`World Cup V4.0-a4` (xG 数据库驱动 + Copula 联合分布 + 251 俱乐部支持)
-- 核心变化：联网情报全面升级——伤停/赛程动机/战术分析三类查询改用 sporttery 官方 bssj 数据源，首发阵容用射手数据补充，仅盘口异动保留联网搜索。
+- 应用版本：`0.5.3`
+- 模型版本：`World Cup V4.0-a5` (xG 数据库驱动 + Copula 联合分布 + 251 俱乐部支持 + 季军战 + 极端强弱局优化)
+- 核心变化：联网情报全面升级——伤停/赛程动机/战术分析三类查询改用 sporttery 官方 bssj 数据源，首发阵容用射手数据补充，仅盘口异动保留联网搜索；模型重大修复——季军战大球趋势优化、极端强弱局 LowBlock 熔断机制、四届世界杯完整回测验证。
 
 ## 核心能力
 
@@ -56,6 +56,8 @@ xG 数据库 (2018+2022 StatsBomb/FBref)
 - **经验校准层**：基于 212 场历史预测的校准 bins，修正模型系统性偏差。
 - **比赛阶段分层**：小组赛/32强/16强/八强/四强/决赛分别应用不同的保守系数和 surge 系数。
 - **小组第三轮动机**：专为 2026 世界杯 48 队赛制设计的动机修正器。
+- **季军战大球优化**：Third Place 专属调优，禁用 Dixon-Coles 低分修正、强制开放节奏、点球尺度调整。
+- **极端强弱局熔断**：favWinGap > 60pp 时触发，unstable-low-block 战术性修正，85pp+弱队完全归零。
 - **实时比赛模型**：支持分钟级动态更新，时间衰减 + 伤停补时尾端增强。
 
 ## 运行与部署
@@ -114,7 +116,7 @@ curl "http://localhost:4173/api/sporttery-bssj?mid=2040292"
 ```powershell
 npm run dist
 ```
-产物默认输出到：`dist\World Cup V3.2 Workbench-0.5.2-portable.exe`
+产物默认输出到：`dist\World Cup V3.2 Workbench-0.5.3-portable.exe`
 > 桌面版启动时会分配随机本地端口，避免与已运行的 `4173` 冲突。
 
 ## CLV 分类账使用
@@ -163,6 +165,9 @@ node scripts/backtest-v4.js
 # 世界杯专项回测
 node scripts/backtest-wc.js
 
+# 四届世界杯完整回测
+node scripts/backtest-wc-all.js
+
 # 结果分析
 node scripts/backtest-results.js
 
@@ -171,6 +176,9 @@ node scripts/backtest-final.js
 
 # 一键拉取 + 回测
 node scripts/fetch-and-backtest.js
+
+# V4 压力测试
+node scripts/stress-test-v4.js
 ```
 
 ### Club ELO 数据
@@ -197,7 +205,7 @@ node scripts/backtest-v33-selector.js
 
 ```text
 src/                         后端服务、模型引擎、Electron 入口
-  ├── v4-engine.js          V4.0 模型引擎（含 251+ 俱乐部支持、Copula）
+  ├── v4-engine.js          V4.0 模型引擎（含 251+ 俱乐部支持、Copula、季军战优化、极端局熔断）
   ├── server.js             HTTP 服务器 + Auto Monitor + 采集状态 API + 伤停 bssj API
   ├── jingcai-ttg-scanner.js 玩法扫描器
   ├── anysport-service.js   AnySport 实时数据服务
@@ -211,9 +219,12 @@ scripts/                     回测和验证脚本
   ├── backtest-v2.js        V2 回测
   ├── backtest-v4.js        V4 完整回测
   ├── backtest-wc.js        世界杯专项回测
+  ├── backtest-wc-all.js    四届世界杯完整回测
+  ├── backtest-wc2022-ko.js 2022 韩国比赛回测
   ├── backtest-results.js   结果分析
   ├── backtest-final.js     最终回测
   ├── fetch-and-backtest.js 一键拉取回测
+  ├── stress-test-v4.js    V4 压力测试
   ├── migrate_to_sqlite.js  历史数据迁移到 SQLite
   ├── recover_history.js    历史数据恢复
   ├── fetch_hhad_500.py     500.com 历史让球赔率
@@ -228,6 +239,18 @@ dist/                        (自动生成) 打包产物，勿提交
 ```
 
 ## 更新日志
+
+### 0.5.3 (2026-06-29) - 季军战 + 极端强弱局熔断 + 四届世界杯完整回测
+- **季军战大球优化 (Third Place)**：禁用 Dixon-Coles 低分修正 (dcRho=0)、强制开放节奏 (tempo=open)、点球尺度调整 (penaltyScale=0.30)
+- **极端强弱局熔断机制 (favWinGap > 60pp)**：unstable-low-block 战术性修正，85pp+弱队归零，反杀美式防守、防止强队弱防被爆冷
+- **Dixon-Coles 覆盖范围扩展**：覆盖所有非小组赛（16强+）
+- **四届世界杯完整回测**：2010/2014/2018/2022 48场杯赛验证
+- **回测结果**：
+  - 2022世界杯 ROI: -9.5% (原-14.6%，提升+5.1pp)
+  - 2014世界杯 ROI: +192.6%
+  - 2010世界杯 ROI: +119.6%
+  - 核心信号验证：HAFU 四届全正、TTG 四届全负（方向正确）、八强连续三届开正（8强是甜区）
+- **新增脚本**：`backtest-wc-all.js`、`backtest-wc2022-ko.js`、`stress-test-v4.js`
 
 ### 0.5.2 (2026-06-25) - 联网情报 bssj 全面接入
 - **赛程动机改用官方数据**：`getMatchTablesV1`（积分榜）+ `getFutureMatchesV1`（未来赛事），自动输出小组排名、积分、未来赛程密集度
@@ -279,3 +302,4 @@ dist/                        (自动生成) 打包产物，勿提交
 - 绝对禁止提交 `node_modules/`、`dist/`、`outputs/` 及任何包含本机 Key 的文件！
 - 共享开源项目时只脱敏分享源码、模型文档和打分架构。
 - 独立发行可将 `dist` 目录下的 portable exe 打包分发。
+
