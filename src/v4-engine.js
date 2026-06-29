@@ -959,6 +959,7 @@ const MOTIVATION_MODIFIERS = {
   already_qualified:  { lambdaScale: 0.88, penaltyScale: 0.70 },
   must_win:           { lambdaScale: 1.08, penaltyScale: 0.60 },
   draw_enough:        { lambdaScale: 0.90, penaltyScale: 1.35 },
+  third_place:        { lambdaScale: 1.05, penaltyScale: 0.30 }, // 季军赛：放大进攻λ，削减弱队防守惩罚
 };
 
 const CRS_KEYS = [
@@ -1082,11 +1083,15 @@ export function buildFullV32Model({ match = {}, research = null, controls = {}, 
   const strength = buildStrength(home, away, market, signals);
   const sij = getEffectiveStrength(strength.home) - getEffectiveStrength(strength.away);
   const p0 = buildP0({ home, away, market, sij, signals });
+  // 极度强弱局熔断：胜率差>60pp时削弱 unstable-low-block (防巴西vs韩国式高估弱队)
+  signals.favWinGap = Math.abs(p0.h - p0.a);
   const correction = buildCorrections({ p0, sij, home, away, signals, controls, drawState });
   const profile = chooseProfile({ controls, home, away, p0, signals });
   const deltaElo = (home.elo || 1700) - (away.elo || 1700);
   const lambdas = chooseLambdas({ sij, p0, controls, signals, motivMod, profileName: profile, deltaElo });
-  const tempo = chooseTempo({ controls, signals });
+  const tempo = motivation === "third_place"
+    ? "open"  // 季军赛历史场均3.2球, 强制开放节奏
+    : chooseTempo({ controls, signals });
   const tempoFactor = tempo === "slow" ? 0.9 : tempo === "open" ? 1.08 : 1;
   // V4.0: compute dispersion from archetypes + stage
   const dispR = getDispersion(home, away, matchStage);
@@ -1119,7 +1124,10 @@ export function buildFullV32Model({ match = {}, research = null, controls = {}, 
   // Dixon-Coles low-score correction: knockout stages amplify 0-0/1-1/1-0/0-1
   // non-group = quarter/semi/final/round_of_16/round_of_32 → ρ=0.06 (halved from 0.12: anti-overfit)
   // group = ρ=0.03 (catch matchday-3 collusion draws without overfitting)
-  const dcRho = matchStage !== "group" ? 0.06 : 0.03;
+  // third_place = ρ=0 (季军赛无压力 → 历史场均3.2球, 禁止低分修正)
+  const dcRho = matchStage !== "group"
+    ? (motivation === "third_place" ? 0 : 0.06)
+    : 0.03;
   const scores = buildScoreMatrix(
     lambdas.home * tempoFactor, lambdas.away * tempoFactor, profile,
     { r: dispR, rho: dcRho, copulaRho: dynCopulaRho, dcRho }
@@ -1762,7 +1770,11 @@ function applyV33LambdaAdjustments(lambdas, signals) {
   favTacticalMult *= safeFav;
   dogTacticalMult *= safeDog;
   if (signals.unstableFavorite) {
-    const unstableScale = signals.interactionWeakOpponent ? 0.5 : 1;
+    // 极度强弱局熔断：胜率差>60pp → 弱队抵抗力可忽略 (防巴西vs韩国式过度惩罚热门)
+    const mismatchScale = (signals.favWinGap || 0) > 0.60
+      ? Math.max(0, 1 - (signals.favWinGap - 0.60) / 0.25) // 60pp→100%, 85pp→0%
+      : 1.0;
+    const unstableScale = (signals.interactionWeakOpponent ? 0.5 : 1) * mismatchScale;
     favTacticalMult *= 1 - 0.04 * unstableScale;
     dogTacticalMult *= 1 + 0.02 * unstableScale;
   }
