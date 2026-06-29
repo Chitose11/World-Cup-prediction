@@ -1535,17 +1535,16 @@ tbody tr:last-child td {
   border: 1px dashed #fcc; border-radius: 8px; margin: 8px 0;
 }
 
-/* ── V4 HAFU 3x3 Matrix ─────────────────────────────────── */
+/* ── V4 HAFU 4×4 矩阵 (单Grid, 16节点—杜绝错位) ────────── */
 .hafu-matrix-card {
   width: 100%; box-sizing: border-box;
   border: 1px solid var(--line); border-radius: 8px;
   background: #fff; overflow: hidden;
   box-shadow: 0 2px 8px rgba(0,0,0,0.02);
 }
-.hafu-matrix-sweet {
+.hafu-grid-sweet {
   border: 2px solid #f0a500 !important;
   box-shadow: 0 0 16px rgba(240,165,0,0.18);
-  position: relative;
 }
 .hafu-sweet-badge {
   background: linear-gradient(135deg, #f0a500, #ff6b00);
@@ -1553,75 +1552,48 @@ tbody tr:last-child td {
   padding: 2px 10px; border-radius: 999px;
   margin-left: 8px; white-space: nowrap;
 }
-.hafu-matrix {
+
+/* Single 4-column grid — no split containers = no alignment drift */
+.hafu-grid {
   display: grid;
-  grid-template-columns: 72px 1fr 1fr 1fr;
+  grid-template-columns: 80px 1fr 1fr 1fr;
   gap: 1px;
   background: var(--line);
-  padding: 0;
-}
-.hafu-row-label {
-  display: flex; align-items: center; justify-content: center;
-  background: #f8f7f4; color: var(--muted);
-  font-size: 12px; font-weight: 700; padding: 8px 4px;
-  border-right: 1px solid var(--line);
-}
-/* top row labels (column headers) */
-.hafu-matrix::before { content: ""; }
-.hafu-col-header {
-  display: flex; align-items: center; justify-content: center;
-  background: #f8f7f4; color: var(--muted);
-  font-size: 11px; font-weight: 700; padding: 6px 4px;
 }
 
 .hafu-cell {
   display: flex; flex-direction: column; align-items: center;
-  justify-content: center; padding: 10px 6px; gap: 3px;
-  background: #fff; text-align: center;
-  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
-  min-height: 68px;
+  justify-content: center; padding: 8px 4px; gap: 2px;
+  background: #fff; text-align: center; min-height: 62px;
 }
-.hafu-cell-empty {
-  background: #fafaf9; color: var(--muted); font-size: 12px;
-}
-.hafu-cell-fat {
-  background: #fff5f5; border: 2px solid #e53935 !important;
-  border-radius: 4px; z-index: 1;
-  box-shadow: 0 0 12px rgba(229,57,53,0.2);
-}
-.hafu-cell-value {
-  background: #f4faf4; border-left: 3px solid #2e7d32;
-}
-.hafu-cell-warm {
-  background: #fffcf5; border-left: 3px solid #f0a500;
-}
-.hafu-cell-noise { opacity: 0.35; }
-
-.hafu-cell-label {
-  font-size: 13px; font-weight: 800; color: var(--ink);
-}
-.hafu-cell-odds {
-  font-size: 14px; font-weight: 900; color: #c62828;
-  font-variant-numeric: tabular-nums;
-}
-.hafu-cell-ev {
-  font-size: 11px; font-weight: 700; color: var(--good);
-  font-variant-numeric: tabular-nums;
-}
-.hafu-cell-fat .hafu-cell-ev { color: #e53935; font-size: 12px; }
-.hafu-cell-noise .hafu-cell-odds,
-.hafu-cell-noise .hafu-cell-ev { color: var(--muted); }
-
-/* column headers above matrix */
-.hafu-col-headers {
-  display: grid; grid-template-columns: 72px 1fr 1fr 1fr;
-  gap: 0; border-bottom: 1px solid var(--line);
-}
-.hafu-col-header {
+.hafu-corner { background: #f8f7f4; min-height: 28px; }
+.hafu-head {
   background: #f8f7f4; color: var(--muted);
-  font-size: 11px; font-weight: 700; padding: 6px 4px;
-  text-align: center; border-right: 1px solid var(--line);
+  font-size: 11px; font-weight: 700; min-height: 28px;
+  display: flex; align-items: center; justify-content: center;
 }
+.hafu-cell-empty { background: #fafaf9; color: #ccc; font-size: 11px; }
+
+.hafu-label  { font-size: 12px; font-weight: 800; color: var(--ink); }
+.hafu-odds  { font-size: 14px; font-weight: 900; color: #c62828; }
+.hafu-ev    { font-size: 11px; font-weight: 700; color: var(--good); display: block; }
+
+/* Fat tail: 🔥红色边框 + 发光 */
+.hafu-cell-fat {
+  background: #fff5f5; outline: 2px solid #e53935; outline-offset: -2px;
+  z-index: 1; box-shadow: 0 0 14px rgba(229,57,53,0.22);
+}
+.hafu-cell-fat .hafu-label { color: #c62828; font-size: 13px; }
+.hafu-cell-fat .hafu-ev    { color: #e53935; font-size: 12px; font-weight: 800; }
+
+/* Value: 绿色左边框 */
+.hafu-cell-value { background: #f4faf4; border-left: 3px solid #2e7d32; }
+/* Warm: 暖黄左边框 */
+.hafu-cell-warm  { background: #fffcf5; border-left: 3px solid #f0a500; }
+/* Noise: 降透 */
+.hafu-cell-noise { opacity: 0.3; }
+.hafu-cell-noise .hafu-odds,
+.hafu-cell-noise .hafu-ev { color: var(--muted); }
 
 
 /* ── Animation Library (adapted from react-bits) ──────────── */

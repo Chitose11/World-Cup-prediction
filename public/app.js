@@ -1938,22 +1938,25 @@ function renderHafuMatrix(play, isSweetSpot) {
   const binMap = {};
   for (const b of play.bins) binMap[b.key] = b;
 
-  const sweetClass = isSweetSpot ? " hafu-matrix-sweet" : "";
+  const sweetClass = isSweetSpot ? " hafu-grid-sweet" : "";
 
   let html = `<div class="scanner-card hafu-matrix-card anim-fade-in-up${sweetClass}">`;
   html += `<div class="scanner-card-head">半全场 HAFU <span class="scanner-margin">抽水 ${play.marketMargin}%</span>`;
   if (isSweetSpot) html += ` <span class="hafu-sweet-badge">🔥 V4甜区</span>`;
   html += `</div>`;
-  html += `<div class="hafu-col-headers">
-    <div class="hafu-col-header"></div>
-    <div class="hafu-col-header">全场胜</div>
-    <div class="hafu-col-header">全场平</div>
-    <div class="hafu-col-header">全场负</div>
-  </div>`;
-  html += `<div class="hafu-matrix">`;
 
+  // ── SINGLE 4×4 Grid (16 nodes — no alignment drift) ──
+  html += `<div class="hafu-grid">`;
+
+  // Row 0: column headers
+  html += `<div class="hafu-cell hafu-corner"></div>`;
+  html += `<div class="hafu-cell hafu-head">全场胜</div>`;
+  html += `<div class="hafu-cell hafu-head">全场平</div>`;
+  html += `<div class="hafu-cell hafu-head">全场负</div>`;
+
+  // Row 1-3: row header + 3 data cells each
   for (let row = 0; row < 3; row++) {
-    html += `<div class="hafu-row-label">${HAFU_ROW_LABELS[row]}</div>`;
+    html += `<div class="hafu-cell hafu-head">${HAFU_ROW_LABELS[row]}</div>`;
     for (const key of HAFU_KEYS_BY_ROW[row]) {
       const b = binMap[key];
       if (!b) { html += `<div class="hafu-cell hafu-cell-empty">—</div>`; continue; }
@@ -1969,13 +1972,13 @@ function renderHafuMatrix(play, isSweetSpot) {
       else if (b.ev > 0) cellClass += " hafu-cell-warm";
       if (isNoise) cellClass += " hafu-cell-noise";
 
-      const fireIcon = isFatTail ? "🔥" : isValue ? "⭐" : "";
-      const evDisplay = isNoise ? "" : `EV ${b.ev >= 0 ? "+" : ""}${b.ev.toFixed(2)}`;
+      const icon = isFatTail ? "🔥 " : isValue ? "⭐ " : "";
+      const evDisplay = isNoise ? "" : `<span class="hafu-ev">EV${b.ev >= 0 ? "+" : ""}${b.ev.toFixed(2)}</span>`;
 
       html += `<div class="${cellClass}">
-        <div class="hafu-cell-label">${fireIcon} ${label}</div>
-        <div class="hafu-cell-odds">@${b.odds}</div>
-        <div class="hafu-cell-ev">${evDisplay}</div>
+        <span class="hafu-label">${icon}${label}</span>
+        <span class="hafu-odds">@${b.odds}</span>
+        ${evDisplay}
       </div>`;
     }
   }
