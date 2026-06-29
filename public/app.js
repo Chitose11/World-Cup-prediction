@@ -1901,6 +1901,8 @@ async function scanAndShowCards(match, model) {
     if (resp.ok) {
       scan = await resp.json();
       scan._stale = false;
+      scan._model = model?.model || {};
+      scan._states = model?.model?.states || {};
       _scannerCache.set(ck, scan);
     } else {
       const errBody = await resp.text().catch(() => "");
@@ -1921,6 +1923,67 @@ async function scanAndShowCards(match, model) {
   _renderScanCards(ck, scan);
 }
 
+// ── HAFU 3x3 Matrix Builder ──
+const HAFU_ROW_LABELS = ["半场胜", "半场平", "半场负"];
+const HAFU_KEYS_BY_ROW = [
+  ["hh","hd","ha"],
+  ["dh","dd","da"],
+  ["ah","ad","aa"],
+];
+const HAFU_LABELS_BY_KEY = { hh:"胜胜", hd:"胜平", ha:"胜负", dh:"平胜", dd:"平平", da:"平负", ah:"负胜", ad:"负平", aa:"负负" };
+const HAFU_FAT_TAIL = new Set(["hh","aa","dh"]); // 回测验证的甜区选项
+const HAFU_NOISE_THRESHOLD = 0.015; // prob < 1.5% → 噪音过滤
+
+function renderHafuMatrix(play, isSweetSpot) {
+  const binMap = {};
+  for (const b of play.bins) binMap[b.key] = b;
+
+  const sweetClass = isSweetSpot ? " hafu-matrix-sweet" : "";
+
+  let html = `<div class="scanner-card hafu-matrix-card anim-fade-in-up${sweetClass}">`;
+  html += `<div class="scanner-card-head">半全场 HAFU <span class="scanner-margin">抽水 ${play.marketMargin}%</span>`;
+  if (isSweetSpot) html += ` <span class="hafu-sweet-badge">🔥 V4甜区</span>`;
+  html += `</div>`;
+  html += `<div class="hafu-col-headers">
+    <div class="hafu-col-header"></div>
+    <div class="hafu-col-header">全场胜</div>
+    <div class="hafu-col-header">全场平</div>
+    <div class="hafu-col-header">全场负</div>
+  </div>`;
+  html += `<div class="hafu-matrix">`;
+
+  for (let row = 0; row < 3; row++) {
+    html += `<div class="hafu-row-label">${HAFU_ROW_LABELS[row]}</div>`;
+    for (const key of HAFU_KEYS_BY_ROW[row]) {
+      const b = binMap[key];
+      if (!b) { html += `<div class="hafu-cell hafu-cell-empty">—</div>`; continue; }
+
+      const label = HAFU_LABELS_BY_KEY[key] || key;
+      const isNoise = b.modelProb < HAFU_NOISE_THRESHOLD;
+      const isFatTail = HAFU_FAT_TAIL.has(key) && b.ev > 1.05 && !isNoise;
+      const isValue = b.isValue && !isNoise;
+
+      let cellClass = "hafu-cell";
+      if (isFatTail) cellClass += " hafu-cell-fat";
+      else if (isValue) cellClass += " hafu-cell-value";
+      else if (b.ev > 0) cellClass += " hafu-cell-warm";
+      if (isNoise) cellClass += " hafu-cell-noise";
+
+      const fireIcon = isFatTail ? "🔥" : isValue ? "⭐" : "";
+      const evDisplay = isNoise ? "" : `EV ${b.ev >= 0 ? "+" : ""}${b.ev.toFixed(2)}`;
+
+      html += `<div class="${cellClass}">
+        <div class="hafu-cell-label">${fireIcon} ${label}</div>
+        <div class="hafu-cell-odds">@${b.odds}</div>
+        <div class="hafu-cell-ev">${evDisplay}</div>
+      </div>`;
+    }
+  }
+
+  html += `</div></div>`;
+  return html;
+}
+
 function _renderScanCards(ck, scan) {
   // Discard if match no longer selected
   const currentMatch = selectedMatch();
@@ -1932,12 +1995,22 @@ function _renderScanCards(ck, scan) {
     return;
   }
 
-  // ── Scanner cards (HAD / HHAD / TTG) ──
+  // ── Scanner cards (HAD / HHAD / TTG / HAFU) ──
+  const matchStage = inferMatchStage(currentMatch);
+  const states = scan._model?.states || scan._states || { h: 0, d: 0, a: 0 };
+  const winGap = Math.abs((states.h || 0) - (states.a || 0));
+  const isSweetSpot = matchStage === "quarter" || winGap > 0.60;
+
   let cardsHtml = "";
   for (const play of (scan.plays || [])) {
+    // ── HAFU special: 3x3 matrix ──
+    if (play.play === "hafu") {
+      cardsHtml += renderHafuMatrix(play, isSweetSpot);
+      continue;
+    }
+    // ── HAD / HHAD / TTG: standard rows ──
     const hasValue = play.bins.some(b => b.isValue);
     cardsHtml += `<div class="scanner-card anim-fade-in-up${hasValue ? " scanner-card-value anim-pulse-glow" : ""}">`;
-    // Compute excess vig vs fair baseline
     const fairBaseline = play.play === "hhad" ? 4 : 3;
     const excessVig = Math.max(0, play.marketMargin - fairBaseline);
     const heatLevel = excessVig > 15 ? "hot" : excessVig > 10 ? "warm" : excessVig > 5 ? "mild" : "";

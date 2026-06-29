@@ -1,6 +1,6 @@
 /**
  * Jingcai Scanner — V4.0 Step 5 (Full)
- * 中国体彩价值扫描器：HAD(胜平负) + HHAD(让球) + TTG(总进球)
+ * 中国体彩价值扫描器：HAD(胜平负) + HHAD(让球) + TTG(总进球) + HAFU(半全场)
  *
  * Pipeline: V4 model output → devig market → EV/Kelly → value picks
  */
@@ -98,6 +98,23 @@ export class JingcaiScanner {
     return { play: "ttg", label: "总进球", ...result };
   }
 
+  // ── HAFU: 半全场 (9 options — 3x3 matrix) ──────────────────────
+  scanHAFU() {
+    const pool = this.match?.pools?.hafu || [];
+    if (pool.length !== 9) return null;
+    const hafu = this.model.byPlay?.hafu;
+    if (!hafu) return null;
+    const labels = ["胜胜", "胜平", "胜负", "平胜", "平平", "平负", "负胜", "负平", "负负"];
+    const keys = ["hh", "hd", "ha", "dh", "dd", "da", "ah", "ad", "aa"];
+    const spArray = keys.map(k => pool.find(p => p.key === k)?.odds || 0);
+    const modelProbs = keys.map(k => hafu[k] || 0);
+    const result = evaluateBins(modelProbs, spArray, labels);
+    // Attach keys for 3x3 matrix rendering
+    result.keys = keys;
+    result.bins.forEach((b, i) => { b.key = keys[i]; });
+    return { play: "hafu", label: "半全场", ...result };
+  }
+
   // ── Full scan: all play types ────────────────────────────────
   scanAll() {
     const results = [];
@@ -107,6 +124,8 @@ export class JingcaiScanner {
     if (hhad) results.push(hhad);
     const ttg = this.scanTTG();
     if (ttg) results.push(ttg);
+    const hafu = this.scanHAFU();
+    if (hafu) results.push(hafu);
 
     const allValuePicks = results.flatMap(r =>
       r.bins.filter(b => b.isValue).map(b => ({ play: r.play, ...b }))
