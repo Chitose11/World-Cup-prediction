@@ -134,6 +134,7 @@ const MATCHES = [
   // ====== 3rd Place ======
   {
     home: "克罗地亚", away: "摩洛哥", stage: "final", hhadGoalLine: 0,
+    motivation: "third_place",
     result: { full: { h: 2, a: 1 }, half: { h: 2, a: 1 } },
     had:  [{ key:"h",odds:2.30},{ key:"d",odds:3.30},{ key:"a",odds:3.00}],
     hhad: [{ key:"h",odds:4.75},{ key:"d",odds:3.80},{ key:"a",odds:1.52}],
@@ -199,7 +200,7 @@ for (let i = 0; i < MATCHES.length; i++) {
 
   const model = buildFullV32Model({
     match: { home: m.home, away: m.away, hhadGoalLine: m.hhadGoalLine, pools: { had: m.had, hhad: m.hhad, ttg: m.ttg, hafu: m.hafu } },
-    controls: { matchStage: m.stage, motivation: "neutral" },
+    controls: { matchStage: m.stage, motivation: m.motivation || "neutral" },
     research: null, drawState: {}
   });
 

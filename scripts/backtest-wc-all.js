@@ -35,10 +35,10 @@ function oddsTier(tier, favIsHome) {
   return { had: [{ key:"h",odds:h},{ key:"d",odds:d},{ key:"a",odds:a }], hhad, ttg, hafu, hhadGoalLine: t.hhadLine };
 }
 
-function buildMatch(home, away, stage, homeGoals, awayGoals, halfH, halfA, tier, favIsHome) {
+function buildMatch(home, away, stage, homeGoals, awayGoals, halfH, halfA, tier, favIsHome, motivation = "neutral") {
   const odds = oddsTier(tier, favIsHome);
   return {
-    home, away, stage,
+    home, away, stage, motivation,
     result: { full: { h: homeGoals, a: awayGoals }, half: { h: halfH ?? 0, a: halfA ?? 0 } },
     hhadGoalLine: odds.hhadGoalLine,
     had: odds.had, hhad: odds.hhad, ttg: odds.ttg, hafu: odds.hafu,
@@ -64,7 +64,7 @@ const WC2018 = [
   buildMatch("法国","比利时","semi",1,0,0,0,"C",true),
   buildMatch("克罗地亚","英格兰","semi",2,1,0,1,"D",true),
 
-  buildMatch("比利时","英格兰","final",2,0,1,0,"C",true),        // 3rd place
+  buildMatch("比利时","英格兰","final",2,0,1,0,"C",true,"third_place"), // 3rd place
   buildMatch("法国","克罗地亚","final",4,2,2,1,"A",true),         // Final
 ];
 
@@ -87,7 +87,7 @@ const WC2014 = [
   buildMatch("巴西","德国","semi",1,7,0,5,"B",true),              // 😱
   buildMatch("阿根廷","荷兰","semi",0,0,0,0,"C",true),            // 0-0, ARG won pens
 
-  buildMatch("巴西","荷兰","final",0,3,0,2,"C",true),             // 3rd place
+  buildMatch("巴西","荷兰","final",0,3,0,2,"C",true,"third_place"),             // 3rd place
   buildMatch("德国","阿根廷","final",1,0,0,0,"C",true),            // Final
 ];
 
@@ -110,7 +110,7 @@ const WC2010 = [
   buildMatch("荷兰","乌拉圭","semi",3,2,1,1,"B",true),
   buildMatch("德国","西班牙","semi",0,1,0,0,"C",true),
 
-  buildMatch("德国","乌拉圭","final",3,2,1,1,"B",true),           // 3rd place
+  buildMatch("德国","乌拉圭","final",3,2,1,1,"B",true,"third_place"),           // 3rd place
   buildMatch("荷兰","西班牙","final",0,1,0,0,"C",true),            // Final (0-0 aet, ESP 1-0)
 ];
 
@@ -151,7 +151,7 @@ function runWC(name, matches) {
   for (const m of matches) {
     const model = buildFullV32Model({
       match: { home: m.home, away: m.away, hhadGoalLine: m.hhadGoalLine, pools: { had: m.had, hhad: m.hhad, ttg: m.ttg, hafu: m.hafu } },
-      controls: { matchStage: m.stage, motivation: "neutral" },
+      controls: { matchStage: m.stage, motivation: m.motivation || "neutral" },
       research: null, drawState: {}
     });
     if (!model.ok) continue;
