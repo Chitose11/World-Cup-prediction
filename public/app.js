@@ -1818,6 +1818,29 @@ async function exportDayPlanForAI() {
         version: model.meta?.source || "v4",
       } : null;
 
+      // ═══ V4 五玩法赔率+模型概率+edge+EV 合并分析 ═══
+      const plays = {};
+      for (const play of ["had", "hhad", "ttg", "hafu", "crs"]) {
+        const items = match.pools?.[play] || match[play] || [];
+        const probs = model?.byPlay?.[play] || {};
+        if (!items.length) continue;
+        plays[play] = items.map(item => {
+          const modelProb = probs[item.key];
+          const impliedProb = item.odds ? 1 / item.odds : 0;
+          const edge = Number.isFinite(modelProb) ? modelProb - impliedProb : null;
+          const ev = Number.isFinite(modelProb) && item.odds ? modelProb * item.odds - 1 : null;
+          return {
+            key: item.key,
+            label: item.label || item.key,
+            odds: item.odds,
+            modelProb: modelProb ?? null,
+            impliedProb,
+            edge: edge != null ? +edge.toFixed(6) : null,
+            ev: ev != null ? +ev.toFixed(6) : null,
+          };
+        });
+      }
+
       return {
         number: match.number,
         home: match.homeShort || match.home,
@@ -1826,7 +1849,22 @@ async function exportDayPlanForAI() {
         date: match.matchDate || match.businessDate,
         time: match.matchTime,
         hhadGoalLine: match.hhadGoalLine,
+        // V3.3 r6 全信号
+        grade: model?.meta?.grade?.grade || v4?.grade || "C",
+        favoriteClass: v4?.signals?.favoriteClass || "",
+        underdogClass: v4?.signals?.underdogClass || "",
+        dangerZone: v4?.signals?.dangerZone || false,
+        circuitBreaker: v4?.circuitBreaker || false,
+        // V4 stage & motivation
+        stage: model?.meta?.matchStage || inferMatchStage(match),
+        motivation: model?.meta?.motivation || "neutral",
+        strengthModifier: model?.meta?.layers?.signals?.interactionStrengthModifier ?? 1,
+        lambdaMultipliers: v4?.signals?.interactionLambdaMultipliers || {},
+        // Raw pools
         pools,
+        // V4 五玩法合并分析 (赔率+模型概率+edge+EV)
+        plays,
+        // Full V4 model
         v4model: v4,
       };
     });
