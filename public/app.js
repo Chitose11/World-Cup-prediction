@@ -1778,7 +1778,8 @@ async function exportDayPlanForAI() {
   if (!matches.length) return;
 
   els.dayPlanExportBtn.disabled = true;
-  setStatus("正在导出 V4 分析数据...");
+  const includeModel = document.getElementById("dayPlanExportModelChk")?.checked ?? true;
+setStatus(includeModel ? "正在导出 V4 分析数据..." : "正在导出基础赔率数据...");
 
   try {
     const exportData = matches.map(match => {
@@ -1793,10 +1794,10 @@ async function exportDayPlanForAI() {
         }
       }
 
-      // V4 model data
+      // V4 model data (conditional on export option)
       const fullModel = state.fullModelByMatch[match.id];
       const model = fullModel?.model;
-      const v4 = model ? {
+      const v4 = (includeModel && model) ? {
         states: model.states,
         byPlay: Object.fromEntries(
           ["had","hhad","ttg","hafu","crs"].map(play => {
@@ -1820,28 +1821,30 @@ async function exportDayPlanForAI() {
 
       // ═══ V4 五玩法赔率+模型概率+edge+EV 合并分析 ═══
       const plays = {};
-      for (const play of ["had", "hhad", "ttg", "hafu", "crs"]) {
-        const items = match.pools?.[play] || match[play] || [];
-        const probs = model?.byPlay?.[play] || {};
-        if (!items.length) continue;
-        plays[play] = items.map(item => {
-          const modelProb = probs[item.key];
-          const impliedProb = item.odds ? 1 / item.odds : 0;
-          const edge = Number.isFinite(modelProb) ? modelProb - impliedProb : null;
-          const ev = Number.isFinite(modelProb) && item.odds ? modelProb * item.odds - 1 : null;
-          return {
-            key: item.key,
-            label: item.label || item.key,
-            odds: item.odds,
-            modelProb: modelProb ?? null,
-            impliedProb,
-            edge: edge != null ? +edge.toFixed(6) : null,
-            ev: ev != null ? +ev.toFixed(6) : null,
-          };
-        });
+      if (includeModel) {
+        for (const play of ["had", "hhad", "ttg", "hafu", "crs"]) {
+          const items = match.pools?.[play] || match[play] || [];
+          const probs = model?.byPlay?.[play] || {};
+          if (!items.length) continue;
+          plays[play] = items.map(item => {
+            const modelProb = probs[item.key];
+            const impliedProb = item.odds ? 1 / item.odds : 0;
+            const edge = Number.isFinite(modelProb) ? modelProb - impliedProb : null;
+            const ev = Number.isFinite(modelProb) && item.odds ? modelProb * item.odds - 1 : null;
+            return {
+              key: item.key,
+              label: item.label || item.key,
+              odds: item.odds,
+              modelProb: modelProb ?? null,
+              impliedProb,
+              edge: edge != null ? +edge.toFixed(6) : null,
+              ev: ev != null ? +ev.toFixed(6) : null,
+            };
+          });
+        }
       }
 
-      return {
+      const result = {
         number: match.number,
         home: match.homeShort || match.home,
         away: match.awayShort || match.away,
@@ -1849,30 +1852,33 @@ async function exportDayPlanForAI() {
         date: match.matchDate || match.businessDate,
         time: match.matchTime,
         hhadGoalLine: match.hhadGoalLine,
-        // V3.3 r6 全信号
-        grade: model?.meta?.grade?.grade || v4?.grade || "C",
-        favoriteClass: v4?.signals?.favoriteClass || "",
-        underdogClass: v4?.signals?.underdogClass || "",
-        dangerZone: v4?.signals?.dangerZone || false,
-        circuitBreaker: v4?.circuitBreaker || false,
-        // V4 stage & motivation
-        stage: model?.meta?.matchStage || inferMatchStage(match),
-        motivation: model?.meta?.motivation || "neutral",
-        strengthModifier: model?.meta?.layers?.signals?.interactionStrengthModifier ?? 1,
-        lambdaMultipliers: v4?.signals?.interactionLambdaMultipliers || {},
-        // Raw pools
         pools,
-        // V4 五玩法合并分析 (赔率+模型概率+edge+EV)
-        plays,
-        // Full V4 model
-        v4model: v4,
       };
+      // Conditionally attach model analysis
+      if (includeModel) {
+        Object.assign(result, {
+          grade: model?.meta?.grade?.grade || v4?.grade || "C",
+          favoriteClass: v4?.signals?.favoriteClass || "",
+          underdogClass: v4?.signals?.underdogClass || "",
+          dangerZone: v4?.signals?.dangerZone || false,
+          circuitBreaker: v4?.circuitBreaker || false,
+          stage: model?.meta?.matchStage || inferMatchStage(match),
+          motivation: model?.meta?.motivation || "neutral",
+          strengthModifier: model?.meta?.layers?.signals?.interactionStrengthModifier ?? 1,
+          lambdaMultipliers: v4?.signals?.interactionLambdaMultipliers || {},
+          plays,
+          v4model: v4,
+        });
+      }
+      return result;
     });
 
-    const hasModel = exportData.filter(m => m.v4model).length;
+    const hasModel = includeModel ? exportData.filter(m => m.v4model).length : 0;
+    const label = includeModel ? "V4分析" : "基础赔率";
     const blob = new Blob([JSON.stringify({
       exportedAt: new Date().toISOString(),
       engineVersion: "World Cup V4.0 NB+Copula+DC+xG",
+      exportMode: includeModel ? "full" : "odds-only",
       totalMatches: exportData.length,
       withModel: hasModel,
       matches: exportData,
@@ -1880,10 +1886,12 @@ async function exportDayPlanForAI() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `v4-analysis-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `v4-${includeModel ? "analysis" : "odds"}-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setStatus(`已导出 ${exportData.length} 场比赛（${hasModel} 场含 V4 模型）。`);
+    setStatus(includeModel
+      ? `已导出 ${exportData.length} 场比赛（${hasModel} 场含 V4 模型）。`
+      : `已导出 ${exportData.length} 场比赛（仅基础赔率，不含模型分析）。`);
   } catch (error) {
     setStatus(`导出失败：${error.message}`, true);
   } finally {
