@@ -6,9 +6,9 @@
 
 ## 当前版本
 
-- 应用版本：`0.5.3`
-- 模型版本：`World Cup V4.0-a5` (xG 数据库驱动 + Copula 联合分布 + 251 俱乐部支持 + 季军战 + 极端强弱局优化)
-- 核心变化：联网情报全面升级——伤停/赛程动机/战术分析三类查询改用 sporttery 官方 bssj 数据源，首发阵容用射手数据补充，仅盘口异动保留联网搜索；模型重大修复——季军战大球趋势优化、极端强弱局 LowBlock 熔断机制、四届世界杯完整回测验证。
+- 应用版本：`0.5.4`
+- 模型版本：`World Cup V4.0-a6` (xG 数据库驱动 + Copula 联合分布 + 251 俱乐部支持 + 季军战 + 极端强弱局优化 + HAFU 半全场矩阵)
+- 核心变化：联网情报全面升级——伤停/赛程动机/战术分析三类查询改用 sporttery 官方 bssj 数据源；模型重大修复——季军战大球趋势优化、极端强弱局 LowBlock 熔断机制、四届世界杯完整回测验证；UI 升级——HAFU 半全场 3x3 矩阵、交易铁则驾驶舱、赛制全自动推断、导出功能增强。
 
 ## 核心能力
 
@@ -19,9 +19,11 @@
   - **伤停/停赛**：`getInjurySuspensionV1` — 球员姓名、号码、位置、伤病/停赛标志、出场统计
   - **赛程动机/积分榜**：`getMatchTablesV1` + `getFutureMatchesV1` — 小组排名积分、未来赛程密集度
   - **战术分析/近况**：`getMatchFeatureV1` + `getMatchResultV1` + `getResultHistoryV1` — 近10场战况、场均进球/失球、近期比分、历史交锋
-  - **首发阵容**：`getMatchPlayerV1` — 射手/助攻数据作为补充，仍保留联网搜索获取预测阵容
+  - **首发阵容**：`getMatchPlayerV1` — 射手/助攻数据作为补充，仍保留联网搜索获取完整预测阵容
+- **HAFU 半全场 3x3 矩阵**：9个选项EV扫描，智能高亮肥尾机会(hh/aa/dh+EV>1.05)、甜区(quarter或gap>0.60金色边框)
 - 自动把联网情报映射为模型输入，并刷新完整 V4.0 模型输出。
 - **三重风控选择器**：按模型方向、赔率差值、比分矩阵、让球一致性筛选候选项；结合 `EV / (Odds - 1)` 的分母惩罚自然粉碎长尾陷阱；配置了 `2.2倍偏离度熔断` 防止 EV 幻觉。
+- **交易铁则驾驶舱**：顶部红色警告面板展示4条铁则，5%仓位动态联动，maxBet>2500自动红色警告
 - **CLV 分类账 (Closed-Loop Value)**：实时记录投注、自动捕获收盘赔率、计算 CLV 指标、支持 T-10 快照回退机制。
 - **边缘监控系统**：每分钟扫描赔率异动，自动检测边缘波动并在终端告警。
 - **实时比赛模型**：支持分钟级动态泊松模型，可根据当前比分和时间动态更新概率。
@@ -29,6 +31,11 @@
 - **全链路回测工具集**：提供多种回测场景支持，包括世界杯、俱乐部赛事等。
 - **历史数据 SQLite 存储**：支持赔率数据的持久化存储和历史分析。
 - **全日玩法计划**：区分稳健/进取模式，自动生成当日多场比赛组合方案。
+- **导出功能增强**：
+  - 可选是否包含模型分析数据（exportMode: "full" | "odds-only"）
+  - 全天计划导出包含五玩法（had/hhad/ttg/hafu/crs）的 edge/EV/分类标签/赛制
+  - 输出结构对齐 v33-r6 JSON：pools(原始赔率) + plays(合并分析) + v4model(完整引擎)
+- **赛制全自动推断**：inferMatchStage() 自动识别，删除手动 stageSelect 下拉框，增加 API 洞察探测
 - 支持整体模型快照导入/导出，支持 Electron portable exe 独立打包。
 
 ## V4.0 模型概要
@@ -43,7 +50,7 @@ xG 数据库 (2018+2022 StatsBomb/FBref)
   → 战术 lambda 乘数
   → 泊松分数矩阵 + Copula 联合分布
   → 经验校准 (Brier 0.198, ECE 3.2pp)
-  → 玩法特定微调 (HT/FT, Handicap, TTG)
+  → 玩法特定微调 (HT/FT, Handicap, TTG, HAFU)
 ```
 
 **V4.0 关键特性**：
@@ -116,7 +123,7 @@ curl "http://localhost:4173/api/sporttery-bssj?mid=2040292"
 ```powershell
 npm run dist
 ```
-产物默认输出到：`dist\World Cup V3.2 Workbench-0.5.3-portable.exe`
+产物默认输出到：`dist\World Cup V3.2 Workbench-0.5.4-portable.exe`
 > 桌面版启动时会分配随机本地端口，避免与已运行的 `4173` 冲突。
 
 ## CLV 分类账使用
@@ -207,10 +214,13 @@ node scripts/backtest-v33-selector.js
 src/                         后端服务、模型引擎、Electron 入口
   ├── v4-engine.js          V4.0 模型引擎（含 251+ 俱乐部支持、Copula、季军战优化、极端局熔断）
   ├── server.js             HTTP 服务器 + Auto Monitor + 采集状态 API + 伤停 bssj API
-  ├── jingcai-ttg-scanner.js 玩法扫描器
+  ├── jingcai-ttg-scanner.js 玩法扫描器（含 HAFU 扫描）
   ├── anysport-service.js   AnySport 实时数据服务
   └── electron-main.js      Electron 桌面入口
-public/                      前端页面、样式和交互逻辑（卡片式布局）
+public/                      前端页面、样式和交互逻辑（卡片式布局、HAFU 矩阵、交易铁则）
+  ├── app.js                前端逻辑（含导出选项、HAFU 渲染、5%仓位联动）
+  ├── index.html            界面（含铁则面板、导出复选框）
+  └── styles.css            样式（含 hafu-matrix、hafu-cell-fat 等）
 model/world-cup-v32/         Skill、模型规则文档、辅助脚本和参考数据
   ├── references/           V3.3/V4.0 详细文档
   └── scripts/              Python 辅助工具
@@ -239,6 +249,18 @@ dist/                        (自动生成) 打包产物，勿提交
 ```
 
 ## 更新日志
+
+### 0.5.4 (2026-06-30) - HAFU 半全场矩阵 + 交易铁则驾驶舱 + 导出增强 + 赛制自动推断
+- **HAFU 半全场 3x3 矩阵**：3x3网格展示半场×全场结果，每格显示赔率@odds + EV值，智能高亮肥尾机会(hh/aa/dh+EV>1.05红色边框)、甜区(quarter或gap>0.60金色边框)
+- **交易铁则驾驶舱**：顶部红色警告面板展示4条铁则，simBankrollInput旁动态显示单场5%仓位上限，maxBet>2500自动红色警告
+- **导出功能增强**：
+  - 新增"含模型分析"复选框（默认勾选）
+  - 取消勾选时仅导出pools(原始赔率)，跳过所有模型计算
+  - 全天计划导出包含五玩法（had/hhad/ttg/hafu/crs）的 edge/EV/分类标签/赛制
+  - 输出结构对齐 v33-r6 JSON：pools(原始赔率) + plays(合并分析) + v4model(完整引擎)
+  - 文件名区分：v4-analysis-*.json | v4-odds-*.json
+- **赛制全自动推断**：inferMatchStage() 自动识别，删除手动 stageSelect 下拉框，增加 API 洞察探测 console.log
+- **HAFU 矩阵修复**：合并为单一 hafu-grid 容器，16个节点严格按DOM顺序排列，列宽原子级对齐，修复列偏移错位问题
 
 ### 0.5.3 (2026-06-29) - 季军战 + 极端强弱局熔断 + 四届世界杯完整回测
 - **季军战大球优化 (Third Place)**：禁用 Dixon-Coles 低分修正 (dcRho=0)、强制开放节奏 (tempo=open)、点球尺度调整 (penaltyScale=0.30)
