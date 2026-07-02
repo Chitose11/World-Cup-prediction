@@ -4,6 +4,7 @@ import { dirname, extname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFullV32Model } from "./v4-engine.js";
 import { JingcaiScanner } from "./jingcai-ttg-scanner.js";
+import { DEEPSEEK_MODEL, requestV4Recommendation, resolveDeepSeekApiKey, saveDeepSeekApiKey } from "./deepseek-recommender.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const root = normalize(join(__dirname, ".."));
@@ -1157,24 +1158,45 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === "/api/anysport/live") {
+  if (url.pathname === "/api/deepseek/config") {
     try {
-      const { getLiveMatches, getAPIConfigured } = await import("./anysport-service.js");
-      if (!getAPIConfigured()) { json(res, 503, { ok: false, error: "ANYSPORT_API_KEY not configured" }); return; }
-      const params = new URL(url, `http://localhost`).searchParams;
-      const leagueId = params.get("league_id") || "";
-      const result = await getLiveMatches(leagueId);
-      json(res, result.ok ? 200 : 502, result);
-      return;
-    } catch (error) { json(res, 500, { ok: false, error: error.message }); return; }
+      if (req.method !== "POST") {
+        json(res, 405, { ok: false, error: "Method not allowed" });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const result = await saveDeepSeekApiKey(body.apiKey);
+      json(res, 200, { ok: true, ...result });
+    } catch (error) {
+      json(res, 400, { ok: false, model: DEEPSEEK_MODEL, error: error.message });
+    }
+    return;
   }
 
-  if (url.pathname === "/api/v32-inplay") {
+  if (url.pathname === "/api/deepseek/status") {
     try {
-      const body = req.method === "POST" ? await readJsonBody(req) : {};
-      const { buildInPlayModel } = await import("./v4-engine.js");
-      json(res, 200, buildInPlayModel(body));
-    } catch (error) { json(res, 500, { ok: false, error: error.message }); return; }
+      const configured = Boolean(await resolveDeepSeekApiKey());
+      json(res, 200, { ok: true, configured, model: DEEPSEEK_MODEL });
+      return;
+    } catch (error) {
+      json(res, 500, { ok: false, configured: false, model: DEEPSEEK_MODEL, error: error.message });
+      return;
+    }
+  }
+
+  if (url.pathname === "/api/deepseek/recommend") {
+    try {
+      if (req.method !== "POST") {
+        json(res, 405, { ok: false, error: "Method not allowed" });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const recommendation = await requestV4Recommendation(body);
+      json(res, 200, { ok: true, recommendation });
+    } catch (error) {
+      const status = error?.code === "DEEPSEEK_KEY_MISSING" ? 503 : 502;
+      json(res, status, { ok: false, model: DEEPSEEK_MODEL, error: error.message });
+    }
     return;
   }
 
@@ -1317,7 +1339,7 @@ export function startServer(options = {}) {
       server.off("error", onError);
       const address = server.address();
       const actualPort = typeof address === "object" && address ? address.port : port;
-      console.log(`Sporttery V3.2 Workbench running at http://127.0.0.1:${actualPort}`);
+      console.log(`V4 Quant Strategy Workbench running at http://127.0.0.1:${actualPort}`);
       // Phase 1.2: auto-monitor daemon — silent refresh every 30 min, notify on edge surge
       startAutoMonitor();
       resolve({ server, port: actualPort });

@@ -1,16 +1,17 @@
-# World Cup V4.0 赔率概率工作台
+# V4 量化策略工作台
 
 ![项目概览](docs/project-overview.png)
 
-这是一个本地运行的世界杯赔率概率分析工作台。项目把 sporttery 官方赔率、联网情报、V4.0 模型、玩法选择器、CLV 分类账和桌面端打包整合到一个可视化界面里，便于做赛前复盘、玩法筛选、实盘记录和模型留档。
+这是一个本地运行的 V4 赔率概率与量化策略工作台。系统先通过 sporttery bssj、Tavily/Bing 补全赛前情报，再由 V4 生成概率/EV 矩阵，最后交给 DeepSeek-V4-Flash 输出单场或全天的保守、激进两套推荐；API Key 始终留在本机后端。
 
 > ⚠️ 数据和模型结果仅用于研究分析，不构成投注建议。量化有风险，进场需谨慎。
 
 ## 当前版本
 
-- 应用版本：`0.5.4`
+- 应用版本：`0.6.1`
 - 模型版本：`World Cup V4.0-a6` (xG 数据库驱动 + Copula 联合分布 + 251 俱乐部支持 + 季军战 + 极端强弱局优化 + HAFU 半全场矩阵)
-- 核心变化：联网情报全面升级——伤停/赛程动机/战术分析三类查询改用 sporttery 官方 bssj 数据源；模型重大修复——季军战大球趋势优化、极端强弱局 LowBlock 熔断机制、四届世界杯完整回测验证；UI 升级——HAFU 半全场 3x3 矩阵、交易铁则驾驶舱、赛制全自动推断、导出功能增强。
+- 策略模型：`deepseek-v4-flash`
+- 核心变化：恢复赛前联网情报与自动检索流程；单场和全天计划统一把情报与 V4 矩阵交给 DeepSeek，并保留后端结构化风险校验。
 
 ## 核心功能截图
 
@@ -26,23 +27,18 @@
 
 - 同步 sporttery 官方足球计算器赔率接口。
 - 展示胜平负、让球胜平负、比分、总进球、半全场等玩法的隐含概率、模型概率、差值和风险。
-- 联网搜索首发/预测阵容、赛程动机、出线形势和盘口异动（支持 Tavily Search 回退机制）。
-- **bssj 官方数据优先**：以下三类信息优先从 sporttery 官方 bssj 接口获取结构化数据，不可用时自动回退联网搜索：
-  - **伤停/停赛**：`getInjurySuspensionV1` — 球员姓名、号码、位置、伤病/停赛标志、出场统计
-  - **赛程动机/积分榜**：`getMatchTablesV1` + `getFutureMatchesV1` — 小组排名积分、未来赛程密集度
-  - **战术分析/近况**：`getMatchFeatureV1` + `getMatchResultV1` + `getResultHistoryV1` — 近10场战况、场均进球/失球、近期比分、历史交锋
-  - **首发阵容**：`getMatchPlayerV1` — 射手/助攻排行作为补充，仍保留联网搜索获取完整预测阵容
 - **HAFU 半全场 3x3 矩阵**：9个选项EV扫描，智能高亮肥尾机会(hh/aa/dh+EV>1.05红色边框)、甜区(quarter或gap>0.60金色边框)
-- 自动把联网情报映射为模型输入，并刷新完整 V4.0 模型输出。
-- **三重风控选择器**：按模型方向、赔率差值、比分矩阵、让球一致性筛选候选项；结合 `EV / (Odds - 1)` 的分母惩罚自然粉碎长尾陷阱；配置了 `2.2倍偏离度熔断` 防止 EV 幻觉。
+- **赛前联网情报**：优先读取 sporttery bssj 官方数据，缺项时自动回退到 Tavily/Bing，覆盖伤停、赛程动机、近况、历史交锋与阵容。
+- **DeepSeek 智能推荐**：单场工作台与全天计划都支持保守/激进策略，综合 V4 概率、赔率、EV 与已检索的赛前情报。
+- **后端风险校验**：重新计算 EV，剔除不存在或未授权的选项；只允许胜平负、让球胜平负、半全场，同场不得重复入串，最多 3 串 1，组合赔率不超过 50 倍，每注固定 2 元。
+- **数据边界**：联网情报以独立 `research` 字段交给 DeepSeek，网页内容按不可信数据处理；情报不直接改写 V4 的 λ 或概率矩阵。
 - **交易铁则驾驶舱**：顶部红色警告面板展示4条铁则，5%仓位动态联动，maxBet>2500自动红色警告
 - **CLV 分类账 (Closed-Loop Value)**：实时记录投注、自动捕获收盘赔率、计算 CLV 指标、支持 T-10 快照回退机制。
 - **边缘监控系统**：每分钟扫描赔率异动，自动检测边缘波动并在终端告警。
-- **实时比赛模型**：支持分钟级动态泊松模型，可根据当前比分和时间动态更新概率。
 - **Copula 联合分布**：支持主队/客队进球的联合概率分布建模，更准确地刻画相关性。
 - **全链路回测工具集**：提供多种回测场景支持，包括世界杯、俱乐部赛事等。
 - **历史数据 SQLite 存储**：支持赔率数据的持久化存储和历史分析。
-- **全日玩法计划**：区分稳健/进取模式，自动生成当日多场比赛组合方案。
+- **全日玩法计划**：系统逐场补全联网情报并计算 V4 矩阵，再由 DeepSeek 生成稳健/进取组合方案。
 - **导出功能增强**：
   - 可选是否包含模型分析数据（exportMode: "full" | "odds-only"）
   - 全天计划导出包含五玩法（had/hhad/ttg/hafu/crs）的 edge/EV/分类标签/赛制
@@ -77,7 +73,6 @@ xG 数据库 (2018+2022 StatsBomb/FBref)
 - **小组第三轮动机**：专为 2026 世界杯 48 队赛制设计的动机修正器。
 - **季军战大球优化**：Third Place 专属调优，禁用 Dixon-Coles 低分修正、强制开放节奏、点球尺度调整。
 - **极端强弱局熔断**：favWinGap > 60pp 时触发，unstable-low-block 战术性修正，85pp+弱队完全归零。
-- **实时比赛模型**：支持分钟级动态更新，时间衰减 + 伤停补时尾端增强。
 
 ## 运行与部署
 
@@ -93,6 +88,25 @@ npm start
 > 打开浏览器访问：`http://localhost:4173`
 > Windows 用户亦可直接双击 `start-workbench.cmd`
 
+### DeepSeek API 配置
+
+后端固定调用 `https://api.deepseek.com/chat/completions`，模型标识为 `deepseek-v4-flash`。密钥不会写入前端或浏览器存储。任选一种方式：
+
+- 在单场工作台的“AI 量化推荐”区域输入密钥并点击“保存到本机”；输入框始终使用密码遮罩，保存成功后立即清空。
+- 或使用环境变量/密钥文件：
+
+```powershell
+# 方式一：当前终端环境变量
+$env:DEEPSEEK_API_KEY="your-deepseek-api-key"
+npm start
+```
+
+或保存到本机密钥文件：
+
+`%USERPROFILE%\.codex\secrets\deepseek_api_key.txt`
+
+验证状态：`GET /api/deepseek/status`；生成推荐：`POST /api/deepseek/recommend`。
+
 ### Tavily API 配置
 
 后端仅从本机读取密钥，不会向前端暴露。任选以下一种方式：
@@ -104,14 +118,9 @@ npm start
 或保存到秘钥文件（推荐）：
 `%USERPROFILE%\.codex\secrets\tavily_api_key.txt`
 
-### AnySport API 配置（可选）
-
-用于实时比赛数据：
-```powershell
-$env:ANYSPORT_API_KEY="your-anysport-api-key"
-```
-
 ### bssj 官方数据 API
+
+这些接口既供独立研究工具使用，也会作为独立 `research` 字段进入 DeepSeek 推荐提示词；它们不会直接改写 V4 的 λ。
 
 项目提供两个层级的 bssj 数据访问：
 
@@ -225,14 +234,16 @@ node scripts/backtest-v33-selector.js
 ```text
 src/                         后端服务、模型引擎、Electron 入口
   ├── v4-engine.js          V4.0 模型引擎（含 251+ 俱乐部支持、Copula、季军战优化、极端局熔断）
-  ├── server.js             HTTP 服务器 + Auto Monitor + 采集状态 API + 伤停 bssj API
+  ├── server.js             HTTP 服务器 + DeepSeek 推荐 API + V4/状态 API
+  ├── deepseek-recommender.js DeepSeek-V4-Flash 调用、数据净化与推荐风险校验
   ├── jingcai-ttg-scanner.js 玩法扫描器（含 HAFU 扫描）
-  ├── anysport-service.js   AnySport 实时数据服务
   └── electron-main.js      Electron 桌面入口
-public/                      前端页面、样式和交互逻辑（卡片式布局、HAFU 矩阵、交易铁则）
-  ├── app.js                前端逻辑（含导出选项、HAFU 渲染、5%仓位联动）
-  ├── index.html            界面（含铁则面板、导出复选框）
+public/                      前端页面、样式和交互逻辑（V4 矩阵、AI 策略、交易铁则）
+  ├── app.js                前端逻辑（单场/全天 AI 推荐、HAFU 渲染、导出）
+  ├── index.html            界面（含 DeepSeek 状态、推荐面板、铁则面板）
   └── styles.css            样式（含 hafu-matrix、hafu-cell-fat 等）
+test/
+  └── deepseek-recommender.test.js 推荐硬约束测试
 model/world-cup-v32/         Skill、模型规则文档、辅助脚本和参考数据
   ├── references/           V3.3/V4.0 详细文档
   └── scripts/              Python 辅助工具
@@ -267,6 +278,20 @@ dist/                        (自动生成) 打包产物，勿提交
 ```
 
 ## 更新日志
+
+### 0.6.1 (2026-07-02) - 联网情报恢复与混合策略推荐
+- 恢复单场工作台的联网情报面板、手动刷新和自动检索流程，优先 bssj，缺项回退 Tavily/Bing。
+- 全天计划改为逐场执行“联网情报 → V4 矩阵 → DeepSeek”流程。
+- DeepSeek 系统提示词更新为体彩策略师，允许引用已检索的伤停、近况、历史交锋与阵容信息。
+- 后端仅授权胜平负、让球胜平负、半全场，并校验同场隔离、最多 3 串 1、最高 50 倍、每注 2 元。
+- 增加网页内容防提示词注入约束与联网情报净化。
+
+### 0.6.0 (2026-07-02) - DeepSeek-V4-Flash 纯量化推荐
+- 移除前端规则选择器、单场/全天计划实时赛况和 AnySport 后端代理。
+- 新增 DeepSeek-V4-Flash 后端调用，支持 JSON Output 与本机密钥文件。
+- 单场工作台与全天计划统一使用 V4 概率/EV 矩阵生成保守、激进方案。
+- 新增服务端二次校验：正 EV、选项白名单、同场隔离、最多 3 串 1、最高 50 倍、每注 2 元。
+- 新增推荐加载、空、错误、放弃状态与键盘焦点/低动态效果支持。
 
 ### 0.5.4 (2026-06-30) - HAFU 半全场矩阵 + 交易铁则驾驶舱 + 导出增强 + 赛制自动推断
 - **HAFU 半全场 3x3 矩阵**：3x3网格展示半场×全场结果，每格显示赔率@odds + EV值，智能高亮肥尾机会(hh/aa/dh+EV>1.05红色边框)、甜区(quarter或gap>0.60金色边框)

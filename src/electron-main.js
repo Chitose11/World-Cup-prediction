@@ -139,7 +139,7 @@ async function createWindow() {
     minWidth: 1180,
     minHeight: 760,
     show: false,
-    title: "World Cup V3.2 Workbench",
+    title: "V4 Quant Strategy Workbench",
     backgroundColor: "#f7f8f5",
     webPreferences: {
       contextIsolation: true,

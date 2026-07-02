@@ -2,8 +2,9 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const STORAGE_KEY = "sporttery-v33-workbench-state";
-const APP_VERSION = "0.5.0";
-const PLAN_SELECTION_VERSION = "model-rules-v2";
+const APP_VERSION = "0.6.1";
+const RECOMMENDATION_POLICY_VERSION = "deepseek-hybrid-v1";
+const PLAN_SELECTION_VERSION = "deepseek-v4-flash-hybrid-v1";
 const DEFAULT_SIMULATION = { predictions: [], history: [] };
 const DEFAULT_DAY_PLAN = { date: "", budget: 300, plans: [], generatedAt: null, progress: "", selectionVersion: PLAN_SELECTION_VERSION };
 const savedState = loadSavedState();
@@ -19,8 +20,11 @@ const state = {
   researchByMatch: savedState.researchByMatch || {},
   autoByMatch: savedState.autoByMatch || {},
   fullModelByMatch: savedState.fullModelByMatch || {},
+  aiRecommendationByMatch: savedState.recommendationPolicyVersion === RECOMMENDATION_POLICY_VERSION
+    ? (savedState.aiRecommendationByMatch || {})
+    : {},
   simulation: savedState.simulation || { predictions: [], history: [] },
-  dayPlan: savedState.dayPlan || { ...DEFAULT_DAY_PLAN },
+  dayPlan: normalizeDayPlanState(savedState.dayPlan),
 };
 
 let persistentStateReady = false;
@@ -60,17 +64,15 @@ const els = {
   profileSelect: $("#profileSelect"),
   tempoSelect: $("#tempoSelect"),
   autoJudgeBox: $("#autoJudgeBox"),
-  inPlayPanel: $("#inPlayPanel"),
-  inPlayToggleBtn: $("#inPlayToggleBtn"),
-  inPlayRefreshBtn: $("#inPlayRefreshBtn"),
-  inPlayMinutes: $("#inPlayMinutes"),
-  inPlayHomeGoals: $("#inPlayHomeGoals"),
-  inPlayAwayGoals: $("#inPlayAwayGoals"),
-  inPlayResult: $("#inPlayResult"),
   summaryStrip: $("#summaryStrip"),
   scannerCards: $("#scannerCards"),
   oddsTable: $("#scannerCards"),  // legacy alias → V4 scanner container
-  decisionBox: $("#decisionBox"),
+  singleRecommendBtn: $("#singleRecommendBtn"),
+  deepseekStatus: $("#deepseekStatus"),
+  deepseekKeyInput: $("#deepseekKeyInput"),
+  saveDeepseekKeyBtn: $("#saveDeepseekKeyBtn"),
+  deepseekKeyHelp: $("#deepseekKeyHelp"),
+  aiRecommendationBox: $("#aiRecommendationBox"),
   researchBtn: $("#researchBtn"),
   researchToggleBtn: $("#researchToggleBtn"),
   researchBox: $("#researchBox"),
@@ -105,10 +107,20 @@ function loadSavedState() {
   }
 }
 
+function normalizeDayPlanState(value = {}) {
+  const date = typeof value?.date === "string" ? value.date : "";
+  const budget = Math.max(2, Math.floor((Number(value?.budget) || DEFAULT_DAY_PLAN.budget) / 2) * 2);
+  if (value?.selectionVersion !== PLAN_SELECTION_VERSION) {
+    return { ...DEFAULT_DAY_PLAN, date, budget };
+  }
+  return { ...DEFAULT_DAY_PLAN, ...value, date, budget };
+}
+
 function appStatePayload() {
   return {
     schema: "sporttery-v33-workbench-state",
     appVersion: APP_VERSION,
+    recommendationPolicyVersion: RECOMMENDATION_POLICY_VERSION,
     activeView: state.activeView,
     selectedId: state.selectedId,
     selectedPlay: state.selectedPlay,
@@ -117,6 +129,7 @@ function appStatePayload() {
     researchByMatch: state.researchByMatch,
     autoByMatch: state.autoByMatch,
     fullModelByMatch: state.fullModelByMatch,
+    aiRecommendationByMatch: state.aiRecommendationByMatch,
     simulation: state.simulation,
     dayPlan: state.dayPlan,
   };
@@ -176,8 +189,11 @@ function applyPersistentState(payload = {}) {
   state.researchByMatch = payload.researchByMatch || state.researchByMatch || {};
   state.autoByMatch = payload.autoByMatch || state.autoByMatch || {};
   state.fullModelByMatch = payload.fullModelByMatch || state.fullModelByMatch || {};
+  state.aiRecommendationByMatch = payload.recommendationPolicyVersion === RECOMMENDATION_POLICY_VERSION
+    ? (payload.aiRecommendationByMatch || {})
+    : {};
   state.simulation = payload.simulation || state.simulation || { ...DEFAULT_SIMULATION };
-  state.dayPlan = payload.dayPlan || state.dayPlan || { ...DEFAULT_DAY_PLAN };
+  state.dayPlan = normalizeDayPlanState(payload.dayPlan || state.dayPlan);
 }
 
 function sendPersistBeacon() {
@@ -213,6 +229,15 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ""), window.location.href);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "#";
+  } catch {
+    return "#";
+  }
 }
 
 function setStatus(message, error = false) {
@@ -253,12 +278,12 @@ function setModelIoExpanded(expanded) {
 }
 
 function setResearchExpanded(expanded) {
-  state.researchExpanded = expanded;
-  document.querySelector(".research-section")?.classList.toggle("is-collapsed", !expanded);
+  state.researchExpanded = Boolean(expanded);
+  document.querySelector(".research-section")?.classList.toggle("is-collapsed", !state.researchExpanded);
   if (els.researchToggleBtn) {
-    els.researchToggleBtn.textContent = expanded ? "收起" : "展开";
-    els.researchToggleBtn.dataset.icon = expanded ? "▴" : "▾";
-    els.researchToggleBtn.setAttribute("aria-expanded", String(expanded));
+    els.researchToggleBtn.textContent = state.researchExpanded ? "收起" : "展开";
+    els.researchToggleBtn.dataset.icon = state.researchExpanded ? "▴" : "▾";
+    els.researchToggleBtn.setAttribute("aria-expanded", String(state.researchExpanded));
   }
 }
 
@@ -758,53 +783,80 @@ function renderSummary(match, model) {
     .join(" / ");
   const best = Object.entries(model.states).sort((a, b) => b[1] - a[1])[0];
   const bestLabel = { h: "主胜", d: "平局", a: "客胜" }[best[0]];
-  const research = selectedResearch();
   els.summaryStrip.innerHTML = `
     <div class="metric"><div class="metric-label">主胜 / 平 / 客胜</div><div class="metric-value">${fmtPct(model.states.h)} / ${fmtPct(model.states.d)} / ${fmtPct(model.states.a)}</div></div>
     <div class="metric"><div class="metric-label">最高方向</div><div class="metric-value">${bestLabel} ${fmtPct(best[1])}</div></div>
     <div class="metric"><div class="metric-label">Top3 比分</div><div class="metric-value">${topScores}</div></div>
-    <div class="metric"><div class="metric-label">动态数据</div><div class="metric-value">${research ? research.coverage.label : "未搜索"}</div></div>
+    <div class="metric"><div class="metric-label">策略输入</div><div class="metric-value">V4 + 联网情报</div></div>
   `;
 }
 
 function renderAutoJudge(match) {
   if (!els.autoJudgeBox) return;
-  const auto = selectedAutoJudge();
+  if (!match) {
+    els.autoJudgeBox.innerHTML = "V4 引擎通过公平赔率去水初始化参数；DeepSeek 综合联网情报与 V4 矩阵，不修改底层模型。";
+    return;
+  }
+  const model = state.fullModelByMatch[match.id]?.model;
+  const source = model ? "完整 V4 矩阵已就绪" : "当前为本地矩阵预览，生成推荐时会刷新完整 V4";
+  els.autoJudgeBox.innerHTML = `
+    <div class="auto-title">闭环状态：${source}</div>
+    <div class="auto-meta">λ、比分矩阵与各玩法 EV 由 V4 统一计算；AI 综合联网情报完成授权玩法筛选、组合与解释。</div>
+  `;
+}
+
+function providerLabel(provider = "") {
+  if (provider === "sporttery-bssj") return "体彩官方 bssj";
+  if (provider === "tavily") return "Tavily";
+  if (provider === "tavily-bing-fallback") return "Tavily → Bing 回退";
+  if (provider === "bing") return "Bing";
+  return "联网搜索";
+}
+
+function renderResearch() {
+  if (!els.researchBox) return;
+  const match = selectedMatch();
   const research = selectedResearch();
   if (!match) {
-    els.autoJudgeBox.innerHTML = "V4 引擎通过国际公平赔率去水初始化参数，情报仅作为环境参考。";
+    els.researchBox.innerHTML = `<div class="research-empty">选择比赛后可检索伤停、赛程动机、近期战绩、历史交锋与预测阵容。</div>`;
+    if (els.researchBtn) els.researchBtn.disabled = true;
     return;
   }
+  if (els.researchBtn) els.researchBtn.disabled = false;
   if (!research) {
-    els.autoJudgeBox.innerHTML = `
-      <div class="auto-title">自动判断：等待联网情报</div>
-      <div class="auto-meta">当前控件来自赔率去水初估；点击右侧"搜索首发/动机"后会自动重判。</div>
-    `;
+    els.researchBox.innerHTML = `
+      <div class="research-empty">
+        <strong>${escapeHtml(match.homeShort || match.home)} vs ${escapeHtml(match.awayShort || match.away)}</strong>
+        <span>尚未检索。点击“刷新情报”，或直接生成推荐自动补全。</span>
+      </div>`;
     return;
   }
-  if (!auto) {
-    els.autoJudgeBox.innerHTML = `
-      <div class="auto-title">自动判断：未生成</div>
-      <div class="auto-meta">已获取情报，但尚未应用自动参数。</div>
-    `;
-    return;
-  }
-  const profileName = {
-    default: "默认三状态",
-    "elite-finisher": "终结/增压型强队",
-    "defensive-favorite": "热门破低位/防平",
-    balanced: "互有机会 / 中档热门",
-  }[auto.profile] || auto.profile;
-  const tempoName = {
-    normal: "正常",
-    slow: "高温/海拔/旅途降速",
-    open: "开放对攻",
-  }[auto.tempo] || auto.tempo;
-  els.autoJudgeBox.innerHTML = `
-    <div class="auto-title">自动判断：${profileName} · ${tempoName} · 置信度${auto.confidence}</div>
-    <div class="auto-meta">λ 已由平博公平赔率去水固化；右侧情报仅作为人类校验参考，不再干涉底层数学期望。</div>
-    <div class="auto-reasons">${auto.reasons.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
-  `;
+  const categories = research.categories || [];
+  const categoryHtml = categories.map((category) => {
+    const resultHtml = (category.results || []).slice(0, 4).map((item) => `
+      <a class="research-result" href="${escapeHtml(safeExternalUrl(item.url))}" target="_blank" rel="noreferrer">
+        <span>${escapeHtml(item.title || category.label)}</span>
+        <small>${escapeHtml(item.snippet || item.url || "")}</small>
+      </a>`).join("");
+    return `
+      <details class="research-category"${category.key === "injury" ? " open" : ""}>
+        <summary class="research-category-head">
+          <span><strong>${escapeHtml(category.label || category.key)}</strong><small>${escapeHtml(providerLabel(category.provider))}</small></span>
+          <span>${(category.results || []).length} 条</span>
+        </summary>
+        <div class="research-category-body">
+          ${category.answer ? `<div class="research-answer">${escapeHtml(category.answer)}</div>` : ""}
+          ${resultHtml || `<div class="research-query">${escapeHtml(category.error || "暂无可靠来源")}</div>`}
+        </div>
+      </details>`;
+  }).join("");
+  const signalTotal = Math.max(categories.length, 4);
+  els.researchBox.innerHTML = `
+    <div class="research-cover">
+      <span>覆盖度：${escapeHtml(research.coverage?.label || "不足")}</span>
+      <span>${Math.min(Number(research.coverage?.signalCount || 0), signalTotal)}/${signalTotal} 类信号 · ${Number(research.coverage?.totalResults || 0)} 条来源</span>
+    </div>
+    ${categoryHtml || `<div class="research-empty">检索完成，但没有返回可展示的结果。</div>`}`;
 }
 
 function rowsForPlay(match, model, play = state.selectedPlay) {
@@ -831,6 +883,218 @@ function rowsForPlay(match, model, play = state.selectedPlay) {
       };
     })
     .sort((a, b) => (b.ev ?? -1) - (a.ev ?? -1));
+}
+
+function buildV4MatchMatrix(match, model) {
+  const options = ["had", "hhad", "hafu"]
+    .flatMap((play) => rowsForPlay(match, model, play))
+    .filter((row) => Number.isFinite(row.modelProb) && Number.isFinite(row.odds))
+    .map((row) => ({
+      play: row.play,
+      key: row.key,
+      label: row.label,
+      odds: Number(row.odds),
+      probability: Number(row.modelProb),
+      marketProbability: Number(row.impliedProb),
+      ev: Number(row.ev),
+    }));
+  const topScores = (model?.scores || [])
+    .filter((score) => Number.isFinite(score?.prob))
+    .sort((a, b) => b.prob - a.prob)
+    .slice(0, 5)
+    .map((score) => ({ score: `${score.h}:${score.a}`, probability: score.prob }));
+  const lambdas = model?.meta?.lambdas || estimatedControlsForMatch(match);
+  return {
+    matchId: String(match.id),
+    matchNumber: match.number || "",
+    home: match.homeShort || match.home,
+    away: match.awayShort || match.away,
+    matchDate: match.matchDate || match.businessDate || "",
+    matchTime: match.matchTime || "",
+    stage: model?.meta?.matchStage || inferMatchStage(match),
+    lambda: { home: Number(lambdas.home ?? lambdas.lambdaHome), away: Number(lambdas.away ?? lambdas.lambdaAway) },
+    states: model.states,
+    topScores,
+    research: state.researchByMatch[match.id] || null,
+    options,
+  };
+}
+
+function planTypeLabel(type) {
+  return { single: "单关", "2x1": "2串1", "3x1": "3串1", pass: "放弃" }[type] || type || "方案";
+}
+
+function renderAiPlanCard(plan, tone = "conservative") {
+  if (!plan || plan.betType === "pass" || !plan.picks?.length) {
+    return `
+      <article class="ai-plan-card ai-plan-pass">
+        <div class="ai-plan-head"><span>${escapeHtml(plan?.title || "量化方案")}</span><strong>建议放弃</strong></div>
+        <p>${escapeHtml(plan?.logic || "没有授权玩法通过规则校验，请补充数据后重试。")}</p>
+      </article>`;
+  }
+  const picks = plan.picks.map((pick) => `
+    <div class="ai-pick-row">
+      <div class="ai-pick-main">
+        <strong>${escapeHtml(pick.matchNumber || "")} ${escapeHtml(pick.home)} vs ${escapeHtml(pick.away)}</strong>
+        <span>${escapeHtml(playLabels[pick.play] || pick.play)} · ${escapeHtml(pick.label)}</span>
+      </div>
+      <div class="ai-pick-metrics">
+        <span>SP ${Number(pick.odds).toFixed(2)}</span>
+        <span>概率 ${fmtPct(Number(pick.probability))}</span>
+        <span class="edge-pos">EV ${fmtSignedPct(Number(pick.ev))}</span>
+      </div>
+      <p>${escapeHtml(pick.logic)}</p>
+    </div>`).join("");
+  return `
+    <article class="ai-plan-card ai-plan-${tone}">
+      <div class="ai-plan-head">
+        <div><span>${escapeHtml(plan.title)}</span><small>${planTypeLabel(plan.betType)} · 每注 ${fmtMoney(plan.costPerBet || 2)}</small></div>
+        <strong>${Number(plan.totalOdds || 0).toFixed(2)} 倍</strong>
+      </div>
+      <div class="ai-pick-list">${picks}</div>
+      <div class="ai-plan-logic">${escapeHtml(plan.logic)}</div>
+    </article>`;
+}
+
+function renderRecommendationContent(recommendation) {
+  if (!recommendation) return `<div class="empty-state">尚未生成 AI 推荐。</div>`;
+  const warningClass = recommendation.noInvestmentValue ? " ai-summary-warning" : "";
+  return `
+    <div class="ai-summary${warningClass}">
+      <div><span class="ai-model-pill">${escapeHtml(recommendation.model || "deepseek-v4-flash")}</span><span>联网情报 + 后端规则校验</span></div>
+      <strong>${escapeHtml(recommendation.summary)}</strong>
+    </div>
+    <div class="ai-plan-grid">
+      ${renderAiPlanCard(recommendation.conservative, "conservative")}
+      ${renderAiPlanCard(recommendation.aggressive, "aggressive")}
+    </div>
+    <div class="ai-risk-note">${escapeHtml(recommendation.riskWarning)}</div>`;
+}
+
+async function requestDeepSeekRecommendation(body) {
+  const response = await fetch("/api/deepseek/recommend", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) throw new Error(payload.error || "DeepSeek 推荐失败");
+  return payload.recommendation;
+}
+
+function renderSingleRecommendation() {
+  if (!els.aiRecommendationBox) return;
+  const match = selectedMatch();
+  if (!match) {
+    els.aiRecommendationBox.innerHTML = `<div class="empty-state">选择比赛后，DeepSeek 将综合 V4 概率、赔率、EV 与联网情报，生成保守、激进两套策略。</div>`;
+    if (els.singleRecommendBtn) els.singleRecommendBtn.disabled = true;
+    return;
+  }
+  if (els.singleRecommendBtn) els.singleRecommendBtn.disabled = false;
+  els.aiRecommendationBox.innerHTML = renderRecommendationContent(state.aiRecommendationByMatch[match.id]);
+}
+
+async function generateSingleRecommendation() {
+  const match = selectedMatch();
+  if (!match) return;
+  els.singleRecommendBtn.disabled = true;
+  els.singleRecommendBtn.textContent = "分析中…";
+  els.aiRecommendationBox.innerHTML = `
+    <div class="ai-loading" role="status">
+      <span class="ai-loading-orb" aria-hidden="true"></span>
+      <div><strong>正在补全联网情报与 V4 矩阵</strong><span>完成后交给 DeepSeek 生成保守、激进两套策略。</span></div>
+    </div>`;
+  setStatus(`正在检索 ${match.homeShort || match.home} vs ${match.awayShort || match.away} 的赛前情报…`);
+  try {
+    let research = selectedResearch();
+    try {
+      if (els.researchBox) els.researchBox.innerHTML = `<div class="research-empty research-loading">正在检索官方 bssj、Tavily 与 Bing…</div>`;
+      research = await ensureResearchForMatch(match);
+      const auto = inferAutoSettings(match, research);
+      state.autoByMatch[match.id] = auto;
+      applyAutoSettings(auto);
+      setResearchExpanded(true);
+      renderResearch();
+    } catch (researchError) {
+      renderResearch();
+      setStatus(`联网情报不完整（${researchError.message}），将基于现有数据继续分析。`, true);
+    }
+    const payload = await refreshFullModelForMatch(match, research || null);
+    const recommendation = await requestDeepSeekRecommendation({
+      scope: "single",
+      budget: 2,
+      matches: [buildV4MatchMatrix(match, payload.model)],
+    });
+    state.aiRecommendationByMatch[match.id] = recommendation;
+    await persistState({ immediate: true });
+    renderSingleRecommendation();
+    renderAutoJudge(match);
+    setStatus("单场策略已生成，并通过玩法、串关腿数与 50 倍赔率上限校验。");
+  } catch (error) {
+    els.aiRecommendationBox.innerHTML = `
+      <div class="ai-error-state" role="alert">
+        <strong>推荐生成失败</strong><span>${escapeHtml(error.message)}</span>
+        <small>请配置 DEEPSEEK_API_KEY 或密钥文件后重试。</small>
+      </div>`;
+    setStatus(`AI 推荐失败：${error.message}`, true);
+  } finally {
+    els.singleRecommendBtn.disabled = false;
+    els.singleRecommendBtn.textContent = "重新生成";
+  }
+}
+
+async function checkDeepSeekStatus() {
+  if (!els.deepseekStatus) return;
+  try {
+    const response = await fetch("/api/deepseek/status");
+    const payload = await response.json();
+    els.deepseekStatus.classList.toggle("is-ready", Boolean(payload.configured));
+    els.deepseekStatus.classList.toggle("is-missing", !payload.configured);
+    els.deepseekStatus.textContent = payload.configured
+      ? `${payload.model} 已连接 · API Key 仅保存在本机后端`
+      : `${payload.model || "deepseek-v4-flash"} 未配置 · 请设置 DEEPSEEK_API_KEY`;
+    if (els.deepseekKeyInput) {
+      els.deepseekKeyInput.placeholder = payload.configured ? "输入新密钥可替换当前配置" : "输入 DeepSeek API Key";
+    }
+  } catch {
+    els.deepseekStatus.classList.add("is-missing");
+    els.deepseekStatus.textContent = "DeepSeek 连接状态不可用";
+  }
+}
+
+async function saveDeepSeekKey() {
+  const apiKey = els.deepseekKeyInput?.value.trim() || "";
+  if (!apiKey) {
+    els.deepseekKeyHelp.textContent = "请先输入 DeepSeek API Key。";
+    els.deepseekKeyHelp.className = "deepseek-key-help is-error";
+    els.deepseekKeyInput?.focus();
+    return;
+  }
+  els.saveDeepseekKeyBtn.disabled = true;
+  els.saveDeepseekKeyBtn.textContent = "保存中…";
+  els.deepseekKeyHelp.textContent = "正在写入本机安全配置…";
+  els.deepseekKeyHelp.className = "deepseek-key-help";
+  try {
+    const response = await fetch("/api/deepseek/config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "保存失败");
+    els.deepseekKeyInput.value = "";
+    els.deepseekKeyHelp.textContent = "密钥已保存到本机，前端未保留副本。";
+    els.deepseekKeyHelp.className = "deepseek-key-help is-success";
+    await checkDeepSeekStatus();
+    setStatus("DeepSeek API Key 已保存，可以生成 AI 推荐。");
+  } catch (error) {
+    els.deepseekKeyHelp.textContent = `保存失败：${error.message}`;
+    els.deepseekKeyHelp.className = "deepseek-key-help is-error";
+    setStatus(`DeepSeek API Key 保存失败：${error.message}`, true);
+  } finally {
+    els.saveDeepseekKeyBtn.disabled = false;
+    els.saveDeepseekKeyBtn.textContent = "保存到本机";
+  }
 }
 
 function playReliability(play, mode) {
@@ -1255,12 +1519,14 @@ async function fetchResearchForMatch(match) {
     away: match.away,
     league: match.league || "",
     date: match.matchDate || match.businessDate || "",
+    sportteryMatchId: match.id || "",
   });
   const response = await fetch(`/api/research?${params.toString()}`);
   const payload = await response.json();
   if (!response.ok || !payload.ok) throw new Error(payload.error || "联网搜索失败");
   state.researchByMatch[match.id] = payload;
   delete state.fullModelByMatch[match.id];
+  delete state.aiRecommendationByMatch[match.id];
   return payload;
 }
 
@@ -1620,73 +1886,21 @@ function renderDayPlan() {
   const modeledCount = dayMatches.filter((match) => state.fullModelByMatch[match.id]?.model).length;
   els.dayPlanSummary.innerHTML = `
     <div class="sim-kpi"><span>当天比赛</span><strong>${dayMatches.length}</strong></div>
-    <div class="sim-kpi"><span>情报覆盖</span><strong>${searchedCount}/${dayMatches.length || 0}</strong></div>
+    <div class="sim-kpi"><span>联网情报</span><strong>${searchedCount}/${dayMatches.length || 0}</strong></div>
     <div class="sim-kpi"><span>完整模型</span><strong>${modeledCount}/${dayMatches.length || 0}</strong></div>
     <div class="sim-kpi"><span>当前预算</span><strong>${fmtMoney(state.dayPlan.budget || 0)}</strong></div>
   `;
-  els.dayPlanProgress.textContent = state.dayPlan.progress || "生成时会自动补齐当天全部比赛的联网情报，并用完整模型计算两套全天计划。";
+  els.dayPlanProgress.textContent = state.dayPlan.progress || "系统将依次补全联网情报、计算 V4 矩阵，再由 DeepSeek 生成两套策略。";
   renderDayPlanResults();
 }
 
 function renderDayPlanResults() {
-  const plans = state.dayPlan.plans || [];
-  if (!plans.length) {
+  const recommendation = state.dayPlan.recommendation;
+  if (!recommendation) {
     els.dayPlanResults.innerHTML = `<div class="empty-state">暂无全天计划方案。</div>`;
     return;
   }
-  els.dayPlanResults.innerHTML = plans.map((plan) => {
-    const isParlay = plan.parlays != null;
-    return `
-    <details class="day-plan-card" ${isParlay ? "open" : ""}>
-      <summary class="recommend-plan-summary">
-        <span class="plan-title">${escapeHtml(plan.title)}</span>
-        <span class="plan-multiple">${isParlay ? plan.parlays.length+"组" : (plan.units||0)+"倍"}</span>
-        <span class="plan-money">${plan.matches} 场 / 投入 ${fmtMoney(plan.cost)} / 最高返 ${fmtMoney(plan.maxReturn)} / ${plan.maxMultiple.toFixed(1)}倍</span>
-        <span class="details-action" aria-hidden="true"></span>
-      </summary>
-      <div class="day-pick-list">
-        <div class="plan-subline">预期返还 ${fmtMoney(plan.expectedReturn)}${isParlay && plan.unused > 0 ? `。未分配 ${fmtMoney(plan.unused)}（不足 Kelly 阈值留作现金）。` : ""}。生成时间 ${escapeHtml(state.dayPlan.generatedAt || "-")}。</div>
-        ${isParlay ? plan.parlays.map((p) => `
-          <div class="day-pick-row parlay-row">
-            <div class="parlay-legs">
-              ${p.legs.map(l => `<span class="parlay-leg">${escapeHtml(l.home)} vs ${escapeHtml(l.away)}：<strong>${playLabels[l.play]}·${escapeHtml(l.label)}</strong> @${l.odds.toFixed(2)}</span>`).join('<span class="parlay-x"> × </span>')}
-            </div>
-            <div class="day-pick-choice">
-              <strong>2串1</strong>
-              <span>${p.units}注</span>
-            </div>
-            <div class="pick-meta">
-              <span>组合赔率 ${p.comboOdds.toFixed(2)}</span>
-              <span>联合概率 ${fmtPct(p.comboProb)}</span>
-              <span>EV ${(p.ev >= 0 ? "+" : "")}${(p.ev*100).toFixed(1)}%</span>
-              <span class="${p._comboMargin > 0.15 ? 'edge-neg' : ''}">串关抽水 ${(p._comboMargin*100).toFixed(1)}%</span>
-              <span>投入 ${fmtMoney(p.units * 2)}</span>
-              <span>最高返 ${fmtMoney(p.units * 2 * p.comboOdds)}</span>
-            </div>
-          </div>
-        `).join("") : plan.picks.map((pick) => `
-          <div class="day-pick-row">
-            <div class="day-pick-main">
-              <strong>${escapeHtml(pick.matchNumber)} ${escapeHtml(pick.home)} vs ${escapeHtml(pick.away)}</strong>
-              <span>${escapeHtml(pick.matchDate)} ${escapeHtml(pick.matchTime)} · 情报${escapeHtml(pick.researchCoverage)}</span>
-            </div>
-            <div class="day-pick-choice">
-              <strong>${playLabels[pick.play]} · ${escapeHtml(pick.label)}</strong>
-              <span>${pick.units}倍</span>
-            </div>
-            <div class="pick-meta">
-              <span>赔率 ${pick.odds.toFixed(2)}</span>
-              <span>模型 ${fmtPct(pick.modelProb)}</span>
-              <span>EV ${(((pick.modelProb||0)*pick.odds-1) >= 0 ? "+" : "")}${(((pick.modelProb||0)*pick.odds-1)*100).toFixed(1)}%</span>
-              <span>评分 ${pick.score.toFixed(2)}</span>
-              <span>投入 ${fmtMoney(pick.units * 2)}</span>
-              <span>最高返 ${fmtMoney(pick.units * 2 * pick.odds)}</span>
-            </div>
-          </div>
-        `).join("")}
-      </div>
-    </details>
-  `}).join("");
+  els.dayPlanResults.innerHTML = renderRecommendationContent(recommendation);
 }
 
 async function generateDayPlan() {
@@ -1700,13 +1914,12 @@ async function generateDayPlan() {
     setStatus("当前日期没有可生成方案的比赛。", true);
     return;
   }
-  const minBudget = matches.length * 2;
-  const budget = Math.max(minBudget, Math.floor((Number(els.dayPlanBudgetInput.value) || minBudget) / 2) * 2);
+  const budget = Math.max(2, Math.floor((Number(els.dayPlanBudgetInput.value) || 2) / 2) * 2);
   els.dayPlanBudgetInput.value = budget;
-  state.dayPlan = { ...state.dayPlan, date, budget, plans: [], selectionVersion: PLAN_SELECTION_VERSION, progress: `准备生成 ${date} 全部 ${matches.length} 场比赛方案...` };
+  state.dayPlan = { ...state.dayPlan, date, budget, plans: [], recommendation: null, selectionVersion: PLAN_SELECTION_VERSION, progress: `准备补全 ${date} 共 ${matches.length} 场联网情报…` };
   renderDayPlan();
   els.dayPlanGenerateBtn.disabled = true;
-  setStatus(`正在补全 ${date} 当天 ${matches.length} 场比赛的联网情报...`);
+  setStatus(`正在补全 ${date} 当天 ${matches.length} 场比赛的联网情报…`);
   try {
     const modelsByMatch = {};
     let searched = 0;
@@ -1714,18 +1927,19 @@ async function generateDayPlan() {
     const errors = [];
     for (const match of matches) {
       const title = `${match.homeShort || match.home} vs ${match.awayShort || match.away}`;
+      let research = state.researchByMatch[match.id] || null;
       state.dayPlan.progress = `联网情报 ${searched + 1}/${matches.length}：${title}`;
       renderDayPlan();
       try {
-        await ensureResearchForMatch(match);
+        research = await ensureResearchForMatch(match);
         searched += 1;
       } catch (error) {
         errors.push(`${title} 情报失败：${error.message}`);
       }
-      state.dayPlan.progress = `完整模型 ${modeled + 1}/${matches.length}：${title}`;
+      state.dayPlan.progress = `V4 模型 ${modeled + 1}/${matches.length}：${title}`;
       renderDayPlan();
       try {
-        const payload = await refreshFullModelForMatch(match, state.researchByMatch[match.id] || null);
+        const payload = await refreshFullModelForMatch(match, research);
         modelsByMatch[match.id] = payload.model;
         modeled += 1;
       } catch (error) {
@@ -1734,27 +1948,29 @@ async function generateDayPlan() {
       await persistState({ immediate: true });
     }
     const modeledMatches = matches.filter((match) => modelsByMatch[match.id]);
-    const plans = [];
-    for (const mode of ["conservative", "aggressive"]) {
-      const single = buildDayPlan(modeledMatches, modelsByMatch, budget, mode);
-      if (single) plans.push(single);
-      const parlay = await buildParlayPlan(modeledMatches, modelsByMatch, budget, mode);
-      if (parlay) plans.push(parlay);
-    }
+    if (!modeledMatches.length) throw new Error("没有比赛完成 V4 模型计算");
+    state.dayPlan.progress = `DeepSeek-V4-Flash 正在综合 ${modeledMatches.length} 场 V4 矩阵与联网情报…`;
+    renderDayPlan();
+    const recommendation = await requestDeepSeekRecommendation({
+      scope: "day",
+      budget,
+      matches: modeledMatches.map((match) => buildV4MatchMatrix(match, modelsByMatch[match.id])),
+    });
     state.dayPlan = {
       date,
       budget,
       generatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-      selectionVersion: PLAN_SELECTION_VERSION,
-      plans,
+      selectionVersion: "deepseek-v4-flash",
+      plans: [recommendation.conservative, recommendation.aggressive],
+      recommendation,
       errors,
       progress: errors.length
-        ? `已生成，${modeled}/${matches.length} 场完成模型；${errors.length} 条情报或模型失败已跳过。`
-        : `已完成 ${matches.length} 场情报补全和完整模型计算。`,
+        ? `AI 方案已生成；情报 ${searched}/${matches.length}，V4 ${modeled}/${matches.length}，${errors.length} 条异常已降级处理。`
+        : `已完成 ${matches.length} 场联网情报、V4 计算与 DeepSeek 策略生成。`,
     };
     await persistState({ immediate: true });
     renderDayPlan();
-    setStatus(`全天计划已生成：${plans[0]?.matches || 0} 场纳入方案。`);
+    setStatus(recommendation.noInvestmentValue ? "全天计划分析完成：当前数据不足以形成合规方案。" : "全天计划 AI 策略已生成。", recommendation.noInvestmentValue);
   } catch (error) {
     state.dayPlan.progress = `全天计划生成失败：${error.message}`;
     renderDayPlan();
@@ -1920,7 +2136,6 @@ let _scanReqId = 0;          // race-condition guard — discard stale responses
 async function scanAndShowCards(match, model) {
   if (!match || !model) {
     els.scannerCards.innerHTML = "";
-    els.decisionBox.textContent = "等待选择比赛。";
     return;
   }
   const ck = match.id;
@@ -1935,7 +2150,6 @@ async function scanAndShowCards(match, model) {
 
   // ── Loading skeleton ──
   els.scannerCards.innerHTML = `<div class="scanner-loading anim-shimmer" style="padding:24px;border-radius:8px">正在扫描竞彩价值洼地...</div>`;
-  els.decisionBox.innerHTML = `<div class="grade-card"><div class="scanner-loading">计算中...</div></div>`;
 
   let scan = null;
   try {
@@ -1958,7 +2172,6 @@ async function scanAndShowCards(match, model) {
     // Race-condition guard: discard if match changed during fetch
     if (reqId !== _scanReqId) return;
     els.scannerCards.innerHTML = `<div class="scanner-error">扫描失败：${escapeHtml(e.message)}。检查 Copula 引擎是否在线。</div>`;
-    els.decisionBox.innerHTML = `<div class="grade-card"><div>扫描器未响应</div></div>`;
     return;
   }
 
@@ -2040,7 +2253,6 @@ function _renderScanCards(ck, scan) {
 
   if (!scan || scan.error) {
     els.scannerCards.innerHTML = `<div class="scanner-error">扫描器异常：${scan?.error || "未知错误"}</div>`;
-    els.decisionBox.innerHTML = `<div class="grade-card"><div>扫描器异常</div></div>`;
     return;
   }
 
@@ -2080,38 +2292,6 @@ function _renderScanCards(ck, scan) {
     cardsHtml += "</div>";
   }
   els.scannerCards.innerHTML = cardsHtml;
-
-  // ── V4 core scan report ──
-  const vp = scan.valuePicks || [];
-  let vpList = "";
-  if (vp.length) {
-    vpList = vp.map(p =>
-      `<div class="edge-row">
-        <span><small style="color:var(--muted);margin-right:4px">[${p.play.toUpperCase()}]</small>${p.label}</span>
-        <strong class="edge-pos">EV ${p.ev >= 0 ? "+" : ""}${p.ev.toFixed(2)} <small style="color:var(--muted);margin-left:4px;font-weight:normal">SP${p.odds}</small></strong>
-      </div>`
-    ).join("");
-  } else {
-    vpList = `<div class="edge-row"><span>未发现显著价值洼地</span><strong>观望</strong></div>`;
-  }
-
-  const research = selectedResearch();
-  const marginInfo = (scan.plays || []).map(p => `${p.label} ${p.marketMargin}%`).join(" | ");
-
-  els.decisionBox.innerHTML = `
-    <div class="grade-card">
-      <div class="grade-title"><span>V4.0 核心扫描</span><span>${vp.length} 个价值</span></div>
-      <div>体彩抽水率 → ${marginInfo || "无数据"}</div>
-    </div>
-    <div class="grade-card">
-      <div class="grade-title"><span>价值洼地</span><span>${research ? `情报${research.coverage?.label || "已刷新"}` : "未搜索"}</span></div>
-      <div class="top-edge">${vpList}</div>
-    </div>
-    <div class="grade-card model-meta-card">
-      <div class="grade-title"><span>引擎版本</span><span class="model-source-pill">V4.0 NB+Copula+DC+xG</span></div>
-      <div>NB负二项厚尾 → Gaussian Copula相依 → Dixon-Coles低分修正 → xG燃料接入。lambda乘数 + 交互矩阵 + 熔断保护仍由V3.3体系驱动。WDL/让球/总进球由统一得分矩阵衍生。</div>
-    </div>
-  `;
 }
 
 // Legacy table — replaced by V4 scanner cards
@@ -2177,75 +2357,6 @@ function gradeMatch(states) {
     return { grade: "C", reason: "平局或分歧压力偏高，适合降权观察。" };
   }
   return { grade: penalty > 0 ? "C" : "D", reason: "方向分散或数据冲突，暂不适合做强判断。" };
-}
-
-function renderResearch() {
-  const match = selectedMatch();
-  const research = selectedResearch();
-  if (!match) {
-    els.researchBox.textContent = "选择比赛后可联网搜索首发、伤停、赛程动机和盘口异动。";
-    return;
-  }
-  if (!research) {
-    els.researchBox.innerHTML = `
-      <div class="research-empty">
-        <strong>${escapeHtml(match.homeShort || match.home)} vs ${escapeHtml(match.awayShort || match.away)}</strong>
-        <span>还没有刷新联网情报。</span>
-      </div>
-    `;
-    return;
-  }
-
-  const categoryHtml = research.categories.map((category) => {
-    const results = category.results.slice(0, 4);
-    const providerText = providerLabel(category.provider);
-    const resultHtml = results.length
-      ? results.map((item) => `
-          <a class="research-result" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">
-            <span>${escapeHtml(item.title)}</span>
-            <small>${escapeHtml(item.snippet || item.url)}</small>
-          </a>
-        `).join("")
-      : `
-          <a class="research-result" href="${escapeHtml(category.searchUrl)}" target="_blank" rel="noreferrer">
-            <span>没有抓到高相关来源，打开搜索继续核验</span>
-            <small>${escapeHtml(category.query)}</small>
-          </a>
-        `;
-    return `
-      <div class="research-category">
-        <div class="research-category-head">
-          <strong>${escapeHtml(category.label)}</strong>
-          <a href="${escapeHtml(category.searchUrl)}" target="_blank" rel="noreferrer">${category.ok ? `${category.results.length} 条` : "失败"}</a>
-        </div>
-        <div class="research-query">${escapeHtml(category.query)}</div>
-        <div class="research-provider">${providerText}</div>
-        ${category.answer ? `<div class="research-answer">${escapeHtml(category.answer)}</div>` : ""}
-        ${resultHtml}
-      </div>
-    `;
-  }).join("");
-
-  els.researchBox.innerHTML = `
-    <div class="research-cover">
-      <span>覆盖度：${escapeHtml(research.coverage.label)}</span>
-      <span>${research.coverage.signalCount}/4 类信号</span>
-    </div>
-    ${categoryHtml}
-  `;
-}
-
-function providerLabel(provider = "") {
-  if (provider === "tavily") return "Tavily";
-  if (provider === "tavily-bing-fallback") return "Bing fallback";
-  if (provider === "bing") return "Bing";
-  return "Search";
-}
-
-function sourceLabel(source = "") {
-  if (source === "tavily-search") return "Tavily";
-  if (source === "bing-web-search") return "Bing";
-  return "Search";
 }
 
 function currentControls() {
@@ -3127,8 +3238,9 @@ function renderAll() {
   const match = selectedMatch();
   const model = match ? modelProbabilities(match) : null;
   safe('renderHero', () => renderHero(match));
-  safe('renderResearch', renderResearch);
   safe('renderAutoJudge', () => renderAutoJudge(match));
+  safe('renderResearch', renderResearch);
+  safe('renderSingleRecommendation', renderSingleRecommendation);
   if (model) {
     safe('renderSummary', () => renderSummary(match, model));
     safe('renderTable', () => renderTable(match, model));
@@ -3170,34 +3282,28 @@ async function researchCurrentMatch() {
     return;
   }
   els.researchBtn.disabled = true;
-  els.researchBtn.textContent = "搜索中...";
-  setStatus(`正在联网搜索 ${match.homeShort || match.home} vs ${match.awayShort || match.away} 的首发、伤停和赛程动机...`);
+  els.researchBtn.textContent = "检索中…";
+  if (els.researchBox) {
+    els.researchBox.innerHTML = `<div class="research-empty research-loading">正在检索官方 bssj、Tavily 与 Bing…</div>`;
+  }
+  setResearchExpanded(true);
+  setStatus(`正在刷新 ${match.homeShort || match.home} vs ${match.awayShort || match.away} 的联网情报…`);
   try {
-    const params = new URLSearchParams({
-      home: match.home,
-      away: match.away,
-      league: match.league || "",
-      date: match.matchDate || match.businessDate || "",
-      sportteryMatchId: match.id || "",
-    });
-    const response = await fetch(`/api/research?${params.toString()}`);
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.error || "联网搜索失败");
-    state.researchByMatch[match.id] = payload;
-    const auto = inferAutoSettings(match, payload);
+    const research = await ensureResearchForMatch(match, true);
+    const auto = inferAutoSettings(match, research);
     state.autoByMatch[match.id] = auto;
     applyAutoSettings(auto);
-    await refreshFullModel(match, payload);
-    _scannerCache.delete(match.id);  // invalidate: new research → rescan
-    setResearchExpanded(true);
-    persistState();
-    setStatus(`联网情报已刷新：${payload.coverage.label}，${payload.coverage.totalResults} 条候选来源。`);
-    try { renderAll(); } catch (e) { console.error('researchCurrentMatch renderAll:', e.message); }
+    _scannerCache.delete(match.id);
+    await refreshFullModelForMatch(match, research);
+    await persistState({ immediate: true });
+    renderAll();
+    setStatus(`联网情报已刷新：${research.coverage?.label || "已返回"}，V4 矩阵已同步重算。`);
   } catch (error) {
+    renderResearch();
     setStatus(`联网搜索失败：${error.message}`, true);
   } finally {
     els.researchBtn.disabled = false;
-    els.researchBtn.textContent = "重新搜索";
+    els.researchBtn.textContent = "重新检索";
   }
 }
 
@@ -3290,6 +3396,11 @@ function mapRawOdds(source = {}, pairs) {
 els.syncBtn.addEventListener("click", syncSporttery);
 els.researchBtn.addEventListener("click", researchCurrentMatch);
 els.researchToggleBtn.addEventListener("click", () => setResearchExpanded(!state.researchExpanded));
+els.singleRecommendBtn.addEventListener("click", generateSingleRecommendation);
+els.saveDeepseekKeyBtn.addEventListener("click", saveDeepSeekKey);
+els.deepseekKeyInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") saveDeepSeekKey();
+});
 els.matchSearch.addEventListener("input", renderMatches);
 els.viewTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-view]");
@@ -3299,10 +3410,6 @@ els.viewTabs.addEventListener("click", (event) => {
 window.addEventListener("hashchange", () => {
   setActiveView(routeViewFromHash() || "workbench", false);
 });
-els.lambdaHome.addEventListener("input", handleControlChange);
-els.lambdaAway.addEventListener("input", handleControlChange);
-els.profileSelect.addEventListener("change", handleControlChange);
-els.tempoSelect.addEventListener("change", handleControlChange);
 // stageSelect removed in V4 — stage auto-inferred from match data
 function getBestModelForMatch(match) {
   if (!match) return null;
@@ -3310,260 +3417,6 @@ function getBestModelForMatch(match) {
   if (cached?.model) return cached.model;
   return modelProbabilities(match);
 }
-// Recommend section removed in V4.0 — scanner cards replace manual play plans
-
-// 实时赛况面板 — always visible, countdown before KO, live polling after KO
-let inPlayActive = false;
-let inPlayTimer = null;
-let countdownTimer = null;
-
-function updateInPlayPanel() {
-  const match = selectedMatch();
-  if (!match) {
-    els.inPlayToggleBtn.disabled = true;
-    els.inPlayToggleBtn.textContent = "等待开赛";
-    els.inPlayResult.innerHTML = `<div style="color:#999;text-align:center;padding:12px">选择比赛后可查看实时赛况。</div>`;
-    return;
-  }
-  if (!match.matchDate) {
-    els.inPlayToggleBtn.disabled = true;
-    els.inPlayToggleBtn.textContent = "无开赛时间";
-    return;
-  }
-  const ko = new Date(`${match.matchDate}T${String(match.matchTime || "00:00:00").slice(0, 8)}`);
-  const diffSec = (ko - new Date()) / 1000;
-  if (diffSec > 0) {
-    // Not started yet — show countdown
-    els.inPlayToggleBtn.disabled = true;
-    const h = Math.floor(diffSec / 3600);
-    const m = Math.floor((diffSec % 3600) / 60);
-    const s = Math.floor(diffSec % 60);
-    els.inPlayCountdown.textContent = diffSec > 7200 ? `${match.matchDate} ${String(match.matchTime||"").slice(0,5)}` : `距开赛 ${h}h${m}m${s}s`;
-    els.inPlayToggleBtn.textContent = "等待开赛";
-    els.inPlayResult.innerHTML = `<div style="color:#999;text-align:center;padding:12px">${match.homeShort} vs ${match.awayShort} · 尚未开赛 · ${els.inPlayCountdown.textContent}</div>`;
-    // Refresh countdown every second
-    if (countdownTimer) clearInterval(countdownTimer);
-    countdownTimer = setInterval(() => { updateInPlayPanel(); if (!diffSec || diffSec <= -150*60) clearInterval(countdownTimer); }, 1000);
-    return;
-  }
-  // Match is live
-  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-  els.inPlayToggleBtn.disabled = false;
-  if (!inPlayActive) {
-    els.inPlayToggleBtn.textContent = "启动实时";
-    els.inPlayCountdown.textContent = "已开赛";
-  }
-}
-
-function showInPlayCountdown() {
-  if (!els.inPlayPanel) return; // not on single-match page
-  updateInPlayPanel();
-  if (countdownTimer) clearInterval(countdownTimer);
-  countdownTimer = setInterval(updateInPlayPanel, 1000);
-}
-function hideInPlayCountdown() { if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } }
-
-async function fetchLiveData() {
-  if (!inPlayActive) return;
-  const match = selectedMatch();
-  if (!match) return;
-  try {
-    let minutes = 0, h = 0, a = 0;
-    try {
-      const res = await fetch(`/api/anysport/live`);
-      if (res.ok) {
-        const liveData = await res.json();
-        if (liveData?.ok && liveData.matches?.length) {
-          const found = liveData.matches.find(m =>
-            (m.home_team?.name || "").includes(match.homeShort || "") ||
-            (m.away_team?.name || "").includes(match.awayShort || ""));
-          if (found) {
-            minutes = found.minutes_played || found.elapsed || 0;
-            h = found.home_goals || found.score?.home || 0;
-            a = found.away_goals || found.score?.away || 0;
-          }
-        }
-      }
-    } catch (e) { /* fallback */ }
-
-    if (!minutes && !h && !a) {
-      const ko = new Date(`${match.matchDate}T${String(match.matchTime || "00:00:00").slice(0, 8)}`);
-      minutes = Math.min(Math.max(0, Math.floor((new Date() - ko) / 60000)), 120);
-    }
-    els.inPlayCountdown.textContent = `${minutes}' ${h}-${a}`;
-    await refreshInPlay(minutes, h, a);
-  } catch (e) { els.inPlayCountdown.textContent = "数据获取失败"; }
-}
-
-async function refreshInPlay(minutes = 0, h = 0, a = 0) {
-  const match = selectedMatch();
-  if (!match) return;
-  try {
-    const response = await fetch("/api/v32-inplay", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        match, research: state.researchByMatch[match.id] || null,
-        controls: estimatedControlsForMatch(match),
-        drawState: drawStateBeforeMatch(match),
-        inPlay: { minutesPlayed: minutes, currentH: h, currentA: a },
-      }),
-    });
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error);
-    const ip = payload.inPlay;
-    const s = payload.states;
-    els.inPlayResult.innerHTML = `
-      <div class="inplay-stats"><div style="margin-bottom:4px">${minutes}' ${h}-${a}</div>
-        <div>剩余λ <strong>主${ip.lambdaRemaining.home}</strong> <strong>客${ip.lambdaRemaining.away}</strong> · 衰减${(ip.decayFactor*100).toFixed(0)}%</div>
-        <div>下一球 主<strong>${fmtPct(payload.nextGoalProb.home)}</strong> 客<strong>${fmtPct(payload.nextGoalProb.away)}</strong> 无<strong>${fmtPct(payload.nextGoalProb.noGoal)}</strong></div></div>
-      <div class="inplay-wdl">全场 主<strong>${fmtPct(s.h)}</strong> 平<strong>${fmtPct(s.d)}</strong> 客<strong>${fmtPct(s.a)}</strong></div>
-      <div class="inplay-windows"><div>5min 主${fmtPct(payload.window5min.win)} 平${fmtPct(payload.window5min.draw)} 客${fmtPct(payload.window5min.loss)}</div>
-        <div>10min 主${fmtPct(payload.window10min.win)} 平${fmtPct(payload.window10min.draw)} 客${fmtPct(payload.window10min.loss)}</div>
-        <div>20min 主${fmtPct(payload.window20min.win)} 平${fmtPct(payload.window20min.draw)} 客${fmtPct(payload.window20min.loss)}</div></div>`;
-  } catch (e) { els.inPlayResult.innerHTML = `计算失败：${e.message}`; }
-}
-
-function toggleInPlay() {
-  inPlayActive = !inPlayActive;
-  if (inPlayActive) {
-    els.inPlayToggleBtn.textContent = "停止";
-    els.inPlayToggleBtn.style.background = "#c00";
-    els.inPlayRefreshBtn.style.display = "inline-block";
-    els.inPlayRefreshBtn.disabled = false;
-    fetchLiveData();
-    inPlayTimer = setInterval(fetchLiveData, 20000);
-  } else {
-    els.inPlayToggleBtn.textContent = "启动实时";
-    els.inPlayToggleBtn.style.background = "";
-    els.inPlayRefreshBtn.style.display = "none";
-    els.inPlayRefreshBtn.disabled = true;
-    els.inPlayResult.innerHTML = `<div style="color:#999;text-align:center;padding:12px">实时赛况已停止。</div>`;
-    if (inPlayTimer) { clearInterval(inPlayTimer); inPlayTimer = null; }
-  }
-}
-
-if (els.inPlayToggleBtn) els.inPlayToggleBtn.addEventListener("click", toggleInPlay);
-if (els.inPlayRefreshBtn) els.inPlayRefreshBtn.addEventListener("click", fetchLiveData);
-
-// Day plan in-play — auto-pick first live match from selected date
-const dayInPlayEls = {
-  panel: $("#dayInPlayPanel"),
-  countdown: $("#dayInPlayCountdown"),
-  toggleBtn: $("#dayInPlayToggleBtn"),
-  refreshBtn: $("#dayInPlayRefreshBtn"),
-  result: $("#dayInPlayResult"),
-};
-let dayInPlayActive = false;
-let dayInPlayTimer = null;
-
-function getFirstLiveMatch(matches) {
-  const now = new Date();
-  return matches.find(m => {
-    if (!m.matchDate) return false;
-    const ko = new Date(`${m.matchDate}T${String(m.matchTime || "00:00:00").slice(0, 8)}`);
-    return (now - ko) / 60000 >= -5 && (now - ko) / 60000 <= 150;
-  }) || null;
-}
-
-function updateDayInPlay(dayMatches) {
-  if (!dayInPlayEls.panel) return; // not on day plan page
-  const liveMatch = getFirstLiveMatch(dayMatches || []);
-  if (!liveMatch) {
-    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.disabled = true;
-    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.textContent = "暂无进行中比赛";
-    const next = (dayMatches || []).find(m => {
-      if (!m.matchDate) return false;
-      return new Date(`${m.matchDate}T${String(m.matchTime || "00:00:00").slice(0, 8)}`) > new Date();
-    });
-    if (next) {
-      const ko = new Date(`${next.matchDate}T${String(next.matchTime || "00:00:00").slice(0, 8)}`);
-      const h = Math.floor((ko - new Date()) / 3600000);
-      const m = Math.floor(((ko - new Date()) % 3600000) / 60000);
-      if (dayInPlayEls.countdown) dayInPlayEls.countdown.textContent = `${next.homeShort} vs ${next.awayShort} · ${h}h${m}m后开赛`;
-    }
-    return;
-  }
-  if (dayInPlayEls.countdown) dayInPlayEls.countdown.textContent = `${liveMatch.homeShort} vs ${liveMatch.awayShort} · 进行中`;
-  if (!dayInPlayActive) {
-    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.disabled = false;
-    if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.textContent = "启动实时";
-  }
-  dayInPlayEls.panel._liveMatch = liveMatch;
-}
-
-async function dayFetchLiveData() {
-  if (!dayInPlayActive) return;
-  const match = dayInPlayEls.panel._liveMatch;
-  if (!match) return;
-  try {
-    let minutes = 0, h = 0, a = 0;
-    const ko = new Date(`${match.matchDate}T${String(match.matchTime || "00:00:00").slice(0, 8)}`);
-    minutes = Math.min(Math.max(0, Math.floor((new Date() - ko) / 60000)), 120);
-    if (dayInPlayEls.countdown) dayInPlayEls.countdown.textContent = `${minutes}' ${h}-${a}`;
-    const response = await fetch("/api/v32-inplay", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        match, research: state.researchByMatch[match.id] || null,
-        controls: estimatedControlsForMatch(match),
-        drawState: drawStateBeforeMatch(match),
-        inPlay: { minutesPlayed: minutes, currentH: h, currentA: a },
-      }),
-    });
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error);
-    const ip = payload.inPlay;
-    const s = payload.states;
-    if (dayInPlayEls.result) dayInPlayEls.result.innerHTML = `
-      <div class="inplay-stats"><div style="margin-bottom:4px">${minutes}' ${h}-${a}</div>
-        <div>剩余λ <strong>主${ip.lambdaRemaining.home}</strong> <strong>客${ip.lambdaRemaining.away}</strong> · 衰减${(ip.decayFactor*100).toFixed(0)}%</div>
-        <div>下一球 主<strong>${fmtPct(payload.nextGoalProb.home)}</strong> 客<strong>${fmtPct(payload.nextGoalProb.away)}</strong> 无<strong>${fmtPct(payload.nextGoalProb.noGoal)}</strong></div></div>
-      <div class="inplay-wdl">全场 主<strong>${fmtPct(s.h)}</strong> 平<strong>${fmtPct(s.d)}</strong> 客<strong>${fmtPct(s.a)}</strong></div>
-      <div class="inplay-windows"><div>5min 主${fmtPct(payload.window5min.win)} 平${fmtPct(payload.window5min.draw)} 客${fmtPct(payload.window5min.loss)}</div>
-        <div>10min 主${fmtPct(payload.window10min.win)} 平${fmtPct(payload.window10min.draw)} 客${fmtPct(payload.window10min.loss)}</div>
-        <div>20min 主${fmtPct(payload.window20min.win)} 平${fmtPct(payload.window20min.draw)} 客${fmtPct(payload.window20min.loss)}</div></div>`;
-  } catch (e) { if (dayInPlayEls.result) dayInPlayEls.result.innerHTML = `计算失败：${e.message}`; }
-}
-
-function dayToggleInPlay() {
-  dayInPlayActive = !dayInPlayActive;
-  if (dayInPlayActive) {
-    if (dayInPlayEls.toggleBtn) { dayInPlayEls.toggleBtn.textContent = "停止"; dayInPlayEls.toggleBtn.style.background = "#c00"; }
-    if (dayInPlayEls.refreshBtn) dayInPlayEls.refreshBtn.style.display = "inline-block";
-    dayFetchLiveData();
-    dayInPlayTimer = setInterval(dayFetchLiveData, 20000);
-  } else {
-    if (dayInPlayEls.toggleBtn) { dayInPlayEls.toggleBtn.textContent = "启动实时"; dayInPlayEls.toggleBtn.style.background = ""; }
-    if (dayInPlayEls.refreshBtn) dayInPlayEls.refreshBtn.style.display = "none";
-    if (dayInPlayEls.result) dayInPlayEls.result.innerHTML = `<div style="color:#999;text-align:center;padding:12px">实时赛况已停止。</div>`;
-    if (dayInPlayTimer) { clearInterval(dayInPlayTimer); dayInPlayTimer = null; }
-  }
-}
-
-if (dayInPlayEls.toggleBtn) dayInPlayEls.toggleBtn.addEventListener("click", dayToggleInPlay);
-if (dayInPlayEls.refreshBtn) dayInPlayEls.refreshBtn.addEventListener("click", dayFetchLiveData);
-
-// Hook into renderDayPlan to update the in-play panel
-const origRenderDayPlan = renderDayPlan;
-renderDayPlan = function() {
-  origRenderDayPlan();
-  if (state.activeView !== "dayplan") return;
-  const dayMatches = state.matches.filter(m => matchPlanDate(m) === state.dayPlan.date);
-  updateDayInPlay(dayMatches);
-};
-
-const origRenderAll = renderAll;
-let _renderAllGuard = false;
-renderAll = function() {
-  if (_renderAllGuard) return; // prevent re-entrant calls
-  _renderAllGuard = true;
-  origRenderAll();
-  try {
-    if (state.activeView === "workbench") showInPlayCountdown();
-  } catch (e) { console.error('renderAll wrapper:', e.message); }
-  _renderAllGuard = false;
-};
 els.parsePasteBtn.addEventListener("click", parsePastedJson);
 
 // ── Manual odds comparator (backup fallback) ──────────────
@@ -3632,17 +3485,6 @@ els.dayPlanClearBtn.addEventListener("click", clearDayPlan);
 els.simGenerateBtn.addEventListener("click", generateSimulation);
 els.simFetchResultsBtn.addEventListener("click", syncSimulationResults);
 els.simCLVBtn.addEventListener("click", captureClosingLine);
-// API Key localStorage persistence
-const tavilyKeyInput = $("#tavilyKeyInput");
-const anySportKeyInput = $("#anySportKeyInput");
-const saveKeysBtn = $("#saveKeysBtn");
-if (tavilyKeyInput) tavilyKeyInput.value = localStorage.getItem("tavily_api_key") || "";
-if (anySportKeyInput) anySportKeyInput.value = localStorage.getItem("anysport_api_key") || "";
-if (saveKeysBtn) saveKeysBtn.addEventListener("click", () => {
-  if (tavilyKeyInput) localStorage.setItem("tavily_api_key", tavilyKeyInput.value.trim());
-  if (anySportKeyInput) localStorage.setItem("anysport_api_key", anySportKeyInput.value.trim());
-  setStatus("API Key 已保存。");
-});
 
 const sportteryPopupBtn = $("#sportteryPopupBtn");
 if (sportteryPopupBtn) sportteryPopupBtn.addEventListener("click", () => { window.open("https://m.sporttery.cn/mjc/jsq/zqzjq/", "sporttery_calc", "width=420,height=700,top=60,left=60"); });
@@ -3668,11 +3510,12 @@ if (els.simBankrollInput && maxBetHintEl) {
 // playTabs removed in V4.0 — HAD/HHAD/TTG shown as scanner cards simultaneously
 async function initializeApp() {
   await hydratePersistentState();
-  setResearchExpanded(state.researchExpanded);
   setModelIoExpanded(state.modelIoExpanded);
+  setResearchExpanded(state.researchExpanded);
   // playTabs removed in V4.0 — scanner cards replace per-play filtering
   setActiveView(state.activeView);
   renderAll();
+  checkDeepSeekStatus();
   syncSporttery();
 }
 

@@ -1,19 +1,20 @@
 {
   "name": "sporttery-v32-workbench",
-  "version": "0.5.4",
+  "version": "0.6.1",
   "private": true,
-  "description": "World Cup V3.2 visual probability workbench with Sporttery odds sync.",
+  "description": "V4 quantitative sports strategy workbench with online research and DeepSeek-V4-Flash recommendations.",
   "type": "module",
   "main": "src/electron-main.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
+    "test": "node --test",
     "desktop": "electron .",
     "dist": "electron-builder --win portable"
   },
   "build": {
     "appId": "local.worldcup.v32.workbench",
-    "productName": "World Cup V3.2 Workbench",
+    "productName": "V4 Quant Strategy Workbench",
     "directories": {
       "output": "dist"
     },

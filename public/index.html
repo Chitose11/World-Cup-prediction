@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>World Cup V3.2 赔率概率工作台</title>
+    <title>V4 量化策略工作台</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="app-shell">
       <header class="topbar">
         <div class="brand-block">
-          <div class="eyebrow">World Cup V3.2 Workbench</div>
-          <h1>赔率概率工作台</h1>
+          <div class="eyebrow">V4 Quant Strategy Workbench</div>
+          <h1>量化策略工作台</h1>
         </div>
         <div class="sync-group">
           <select id="poolSelect" title="同步玩法">
@@ -32,7 +32,7 @@
           <strong>整体模型快照</strong>
           <button id="modelIoCloseBtn" type="button" data-icon="▴">收起</button>
         </div>
-        <textarea id="modelSnapshotText" placeholder="导出的整体模型快照会显示在这里；也可以粘贴 JSON 后导入。快照包含全部比赛、联网情报、模型输出和模拟盘历史。"></textarea>
+        <textarea id="modelSnapshotText" placeholder="导出的整体模型快照会显示在这里；也可以粘贴 JSON 后导入。快照包含比赛、V4 模型输出、AI 推荐和模拟盘历史。"></textarea>
       </section>
 
       <section class="status-line" id="statusLine">
@@ -59,49 +59,18 @@
             <div class="empty-state">同步后选择一场比赛开始计算。</div>
           </div>
 
-          <div class="controls-grid">
-            <label>
-              主队期望进球
-              <input id="lambdaHome" type="range" min="0.2" max="3.4" step="0.05" value="1.55" />
-              <span id="lambdaHomeValue">1.55</span>
-            </label>
-            <label>
-              客队期望进球
-              <input id="lambdaAway" type="range" min="0.2" max="3.4" step="0.05" value="0.85" />
-              <span id="lambdaAwayValue">0.85</span>
-            </label>
-            <label>
-              比赛画像
-              <select id="profileSelect">
-                <option value="default">默认三状态</option>
-                <option value="elite-finisher">顶级终结型强队</option>
-                <option value="defensive-favorite">热门 vs 防守弱队</option>
-                <option value="balanced">互有机会 / 中档热门</option>
-              </select>
-            </label>
-            <label>
-              环境节奏
-              <select id="tempoSelect">
-                <option value="normal">正常</option>
-                <option value="slow">高温/海拔/旅途降速</option>
-                <option value="open">开放对攻</option>
-              </select>
-            </label>
+          <div class="model-parameter-strip" aria-label="V4 核心参数">
+            <div class="model-parameter"><span>主队进球期望 λ</span><strong id="lambdaHomeValue">1.55</strong></div>
+            <div class="model-parameter"><span>客队进球期望 λ</span><strong id="lambdaAwayValue">0.85</strong></div>
+            <div class="model-parameter"><span>计算纪律</span><strong>只读闭环</strong></div>
+            <div class="model-parameter"><span>决策因子</span><strong>概率 / EV</strong></div>
           </div>
+          <input id="lambdaHome" type="hidden" value="1.55" />
+          <input id="lambdaAway" type="hidden" value="0.85" />
+          <input id="profileSelect" type="hidden" value="default" />
+          <input id="tempoSelect" type="hidden" value="normal" />
           <div class="auto-judge-box" id="autoJudgeBox">
-            V4 引擎通过国际公平赔率去水初始化参数，情报仅作为环境参考。
-          </div>
-
-          <div class="inplay-panel" id="inPlayPanel">
-            <div class="inplay-head">
-              <span class="inplay-badge">⏱ 实时赛况</span>
-              <span id="inPlayCountdown" class="inplay-countdown"></span>
-              <button id="inPlayToggleBtn" type="button" data-icon="▶" disabled>等待开赛</button>
-              <button id="inPlayRefreshBtn" type="button" data-icon="↻" style="display:none">刷新</button>
-            </div>
-            <div class="inplay-result" id="inPlayResult">
-              <div style="color:#999;text-align:center;padding:12px">选择比赛后可查看实时赛况。</div>
-            </div>
+            V4 引擎通过公平赔率去水初始化参数；DeepSeek 只读取概率与 EV，不修改底层模型。
           </div>
 
           <div class="summary-strip" id="summaryStrip"></div>
@@ -119,30 +88,48 @@
             <div class="grade-card" style="border-left:4px solid var(--danger);background:rgba(248,81,73,0.08);padding:10px 14px">
               <ul style="margin:0;padding-left:16px;color:var(--ink-strong);font-size:12px;line-height:1.6">
                 <li><strong>仓位红线：</strong>单场最大下注 ≤ 总本金 <strong style="color:var(--danger)">5%</strong> (Kelly熔断)</li>
-                <li><strong>避险原则：</strong>只做国际杯赛，负 EV 强制空仓，拒绝体彩 25% 抽水</li>
+                <li><strong>避险原则：</strong>优先选择正 EV；负 EV 必须明确警示，拒绝体彩 25% 高抽水</li>
                 <li><strong>禁低赔串：</strong>严禁碰 1.2x 主胜，严禁无脑 2串1/3串1</li>
                 <li><strong>锁定甜区：</strong>耐心等淘汰赛(QF八强)或极度悬殊局的价值洼地</li>
               </ul>
             </div>
           </section>
 
-          <section class="decision-section">
-            <h2>V4.0 扫描报告</h2>
-            <div id="decisionBox" class="decision-box">
-              等待选择比赛。
+          <section class="research-section is-collapsed" aria-labelledby="researchTitle">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">bssj · Tavily · Bing</div>
+                <h2 id="researchTitle">联网情报</h2>
+              </div>
+              <div class="section-actions">
+                <button id="researchToggleBtn" type="button" data-icon="▾" aria-expanded="false">展开</button>
+                <button id="researchBtn" type="button" data-icon="⌕">刷新情报</button>
+              </div>
+            </div>
+            <div id="researchBox" class="research-box" aria-live="polite">
+              <div class="research-empty">选择比赛后可检索伤停、赛程动机、近期战绩、历史交锋与预测阵容。</div>
             </div>
           </section>
 
-          <section class="research-section">
+          <section class="ai-strategy-section" aria-labelledby="aiStrategyTitle">
             <div class="section-head">
-              <h2>联网情报</h2>
-              <div class="section-actions">
-                <button id="researchToggleBtn" type="button" data-icon="▾">展开</button>
-                <button id="researchBtn" type="button" data-icon="⌕">搜索首发/动机</button>
+              <div>
+                <div class="section-kicker">DeepSeek-V4-Flash</div>
+                <h2 id="aiStrategyTitle">AI 量化推荐</h2>
               </div>
+              <button id="singleRecommendBtn" type="button" data-icon="✦" class="ai-primary-btn">生成推荐</button>
             </div>
-            <div id="researchBox" class="research-box">
-              选择比赛后可联网搜索首发、伤停、赛程动机和盘口异动。
+            <div id="deepseekStatus" class="deepseek-status" role="status">正在检查模型连接…</div>
+            <div class="deepseek-key-panel">
+              <label class="deepseek-key-field" for="deepseekKeyInput">
+                <span>DeepSeek API Key</span>
+                <input id="deepseekKeyInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入或替换本机密钥" />
+              </label>
+              <button id="saveDeepseekKeyBtn" type="button" data-icon="✓">保存到本机</button>
+              <div id="deepseekKeyHelp" class="deepseek-key-help" aria-live="polite">密钥仅发送到 127.0.0.1，并保存到本机 .codex/secrets。</div>
+            </div>
+            <div id="aiRecommendationBox" class="ai-recommendation-box" aria-live="polite">
+              <div class="empty-state">选择比赛后，DeepSeek 将综合 V4 模型与联网情报生成保守、激进两套策略。</div>
             </div>
           </section>
 
@@ -193,7 +180,7 @@
               总预算
               <input id="dayPlanBudgetInput" type="number" min="2" step="2" value="300" />
             </label>
-            <button id="dayPlanGenerateBtn" type="button" data-icon="⌕" class="anim-scale-press">补全情报并生成</button>
+            <button id="dayPlanGenerateBtn" type="button" data-icon="✦" class="anim-scale-press">生成 AI 量化方案</button>
             <button id="dayPlanExportBtn" type="button" data-icon="↓">导出AI分析数据</button>
             <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;margin-left:6px;cursor:pointer">
               <input id="dayPlanExportModelChk" type="checkbox" checked style="cursor:pointer" />
@@ -202,20 +189,8 @@
             <button id="dayPlanClearBtn" type="button" data-icon="×">清空全天计划</button>
           </div>
         </div>
-        <div class="inplay-panel" id="dayInPlayPanel">
-          <div class="inplay-head">
-            <span class="inplay-badge">⏱ 实时赛况</span>
-            <span id="dayInPlayCountdown" class="inplay-countdown">选择比赛后查看</span>
-            <button id="dayInPlayToggleBtn" type="button" data-icon="▶" disabled>等待开赛</button>
-            <button id="dayInPlayRefreshBtn" type="button" data-icon="↻" style="display:none">刷新</button>
-          </div>
-          <div class="inplay-result" id="dayInPlayResult">
-            <div style="color:#999;text-align:center;padding:12px">点击全天计划中的比赛编号可查看实时赛况。</div>
-          </div>
-        </div>
-
         <div id="dayPlanProgress" class="day-plan-progress">
-          同步比赛后选择日期，生成时会自动补齐当天全部比赛的联网情报，再用完整模型计算方案。
+          同步比赛后选择日期；系统将依次补全联网情报、计算 V4 矩阵，再由 DeepSeek 生成两套策略。
         </div>
         <div id="dayPlanSummary" class="day-plan-summary"></div>
         <div id="dayPlanResults" class="day-plan-results">
@@ -255,12 +230,6 @@
           </section>
         </div>
       </section>
-      <div class="api-key-bar">
-        <span>API Keys</span>
-        <input id="tavilyKeyInput" type="password" placeholder="Tavily Key" />
-        <input id="anySportKeyInput" type="password" placeholder="AnySport Key" />
-        <button id="saveKeysBtn" type="button">保存</button>
-      </div>
     </main>
 
     <!-- Copula progress overlay -->
